@@ -4,15 +4,52 @@
 @source '../views';
 @source '../../vendor/laravel/framework/src/Illuminate/Pagination/resources/views/*.blade.php';
 
+@font-face {
+    font-family: 'Rubik';
+    src: url('/fonts/Rubik-VariableFont_wght.ttf') format('opentype');
+    font-style: normal;
+    font-weight: 300;
+    font-display: swap;
+}
+
 @theme {
     --font-sans:
-        'Instrument Sans', ui-sans-serif, system-ui, sans-serif,
-        'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-        'Noto Color Emoji';
+        'Rubik', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji',
+        'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
 }
 
 @layer base {
     body {
         @apply bg-white font-sans text-zinc-950 antialiased;
+    }
+
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: rgb(161 161 170 / 45%) transparent;
+    }
+
+    /* Oculta los botones de arriba y abajo (las flechas) */
+    *::-webkit-scrollbar-button {
+        display: none;
+        width: 0;
+        height: 0;
+    }
+
+    *::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+    }
+
+    *::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    *::-webkit-scrollbar-thumb {
+        border-radius: 999px;
+        background: rgb(161 161 170 / 35%);
+    }
+
+    *::-webkit-scrollbar-thumb:hover {
+        background: rgb(113 113 122 / 50%);
     }
 }

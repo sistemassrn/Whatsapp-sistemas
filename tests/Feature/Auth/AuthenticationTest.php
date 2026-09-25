@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\NexoUser;
 use App\Models\User;
 use Illuminate\Support\Facades\RateLimiter;
 use Laravel\Fortify\Features;
@@ -54,11 +55,17 @@ test('users can not authenticate with invalid password', function () {
 });
 
 test('users can logout', function () {
-    $user = User::factory()->create();
+    $user = new NexoUser;
+    $user->forceFill([
+        'usuario' => 'operador-test',
+        'nombre' => 'Operador Test',
+        'activo' => true,
+    ]);
+    $user->id = 1;
 
     $response = $this->actingAs($user)->post(route('logout'));
 
-    $response->assertRedirect(route('home'));
+    $response->assertRedirect(route('login'));
 
     $this->assertGuest();
 });

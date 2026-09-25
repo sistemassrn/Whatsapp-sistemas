@@ -4,23 +4,45 @@ namespace App\Http\Controllers;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\WhatsappConnectionStatus;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class WhatsappConversationsController extends Controller
 {
-    public function __invoke(Request $request): Response
+    public function __invoke(Request $request, WhatsappConnectionStatus $connectionStatus): Response|RedirectResponse
     {
+        $connection = $connectionStatus->connection(autoStart: true, includeQr: false);
+
+        if (! $connection['isReady']) {
+            return redirect()->route('whatsapp.connect');
+        }
+
+        $validated = $request->validate([
+            'chat' => ['nullable', 'string'],
+            'chat_search' => ['nullable', 'string', 'max:100'],
+            'message_search' => ['nullable', 'string', 'max:200'],
+            'message_limit' => ['nullable', 'integer'],
+        ]);
+
         $selectedChatId = $request->string('chat')->toString();
+        $chatSearch = trim((string) ($validated['chat_search'] ?? ''));
+        $messageSearch = trim((string) ($validated['message_search'] ?? ''));
         $selectedConversation = null;
         $messageLimit = min(max($request->integer('message_limit', 50), 1), 300);
         $selectedConversationMessageCount = 0;
 
-        $conversations = Conversation::query()
+        $conversationsQuery = Conversation::query()
             ->with(['contact', 'lastMessage'])
-            ->orderByDesc('last_message_at')
-            ->orderByDesc('updated_at')
+            ->tap(fn (Builder $query): Builder => self::withLatestMessageSnapshot($query))
+            ->when($chatSearch !== '', fn (Builder $query): Builder => self::applyChatSearch($query, $chatSearch))
+            ->orderByDesc('latest_message_timestamp')
+            ->orderByDesc('updated_at');
+
+        $conversations = $conversationsQuery
             ->limit(50)
             ->get();
 
@@ -28,16 +50,30 @@ class WhatsappConversationsController extends Controller
 
         if ($selectedChatId !== '') {
             $selectedConversation = Conversation::query()
+                ->tap(fn (Builder $query): Builder => self::withLatestMessageSnapshot($query))
                 ->where('external_id', $selectedChatId)
+                ->when($chatSearch !== '', fn (Builder $query): Builder => self::applyChatSearch($query, $chatSearch))
                 ->first();
 
-            if ($selectedConversation !== null) {
-                $selectedConversationMessageCount = Message::query()
-                    ->where('conversation_id', $selectedConversation->id)
-                    ->count();
+            if ($selectedConversation === null && $chatSearch !== '') {
+                $selectedConversation = $conversations->first();
+            }
 
-                $messages = Message::query()
+            if ($selectedConversation !== null) {
+                if (! $conversations->contains('id', $selectedConversation->id)) {
+                    $selectedConversation->load(['contact', 'lastMessage']);
+                    $conversations = $conversations->prepend($selectedConversation)->take(50)->values();
+                }
+
+                $messagesQuery = Message::query()
                     ->where('conversation_id', $selectedConversation->id)
+                    ->when($messageSearch !== '', function ($query) use ($messageSearch): void {
+                        $query->whereRaw(self::likeSql('body'), [self::likeContains($messageSearch)]);
+                    });
+
+                $selectedConversationMessageCount = (clone $messagesQuery)->count();
+
+                $messages = $messagesQuery
                     ->orderByRaw('COALESCE(sent_at, received_at, created_at) desc')
                     ->limit($messageLimit)
                     ->get()
@@ -46,18 +82,41 @@ class WhatsappConversationsController extends Controller
             }
         }
 
+        $latestMessages = Message::query()
+            ->whereIn('id', $conversations->pluck('latest_message_id')->filter()->unique()->values())
+            ->get()
+            ->keyBy('id');
+
         return Inertia::render('whatsapp/conversations', [
-            'operator' => session('testing_operator'),
-            'conversations' => $conversations->map(fn (Conversation $conversation): array => [
-                'id' => $conversation->id,
-                'external_id' => $conversation->external_id,
-                'title' => $conversation->title,
-                'contact_name' => $conversation->contact?->name ?? $conversation->contact?->push_name,
-                'last_message_body' => $conversation->lastMessage?->body,
-                'last_message_direction' => $conversation->lastMessage?->direction,
-                'last_message_at' => $conversation->last_message_at?->toISOString(),
-            ]),
-            'selectedChatId' => $selectedChatId !== '' ? $selectedChatId : null,
+            'operator' => $request->user() === null ? null : [
+                'name' => $request->user()->nombre ?: $request->user()->usuario,
+                'usuario' => $request->user()->usuario,
+            ],
+            'filters' => [
+                'chat_search' => $chatSearch,
+                'message_search' => $messageSearch,
+            ],
+            'flash' => [
+                'success' => session('success'),
+                'error' => session('error'),
+            ],
+            'connection' => $connection,
+            'conversations' => $conversations->map(function (Conversation $conversation) use ($latestMessages): array {
+                $latestMessage = $latestMessages->get($conversation->getAttribute('latest_message_id')) ?? $conversation->lastMessage;
+                $latestMessageAt = $latestMessage?->sent_at ?? $latestMessage?->received_at ?? $latestMessage?->created_at ?? $conversation->last_message_at;
+
+                return [
+                    'id' => $conversation->id,
+                    'external_id' => $conversation->external_id,
+                    'title' => $conversation->title,
+                    'contact_name' => $conversation->contact?->name ?? $conversation->contact?->push_name,
+                    'last_message_preview' => self::messagePreview($latestMessage),
+                    'last_message_body' => $latestMessage?->body,
+                    'last_message_direction' => $latestMessage?->direction,
+                    'last_message_at' => $latestMessageAt?->toISOString(),
+                ];
+            }),
+            'selectedChatId' => $selectedConversation?->external_id ?? ($selectedChatId !== '' ? $selectedChatId : null),
             'messageLimit' => $messageLimit,
             'hasMoreMessages' => $selectedConversationMessageCount > $messageLimit,
             'messages' => $messages->map(fn (Message $message): array => [
@@ -65,7 +124,15 @@ class WhatsappConversationsController extends Controller
                 'external_id' => $message->external_id,
                 'direction' => $message->direction,
                 'body' => $message->body,
+                'type' => $message->type,
                 'status' => $message->status,
+                'media_url' => $message->media_disk === 'whatsapp_media' && $message->media_path !== null
+                    ? route('whatsapp.messages.media.show', $message)
+                    : null,
+                'media_mime_type' => $message->media_mime_type,
+                'media_filename' => $message->media_filename,
+                'media_size_bytes' => $message->media_size_bytes,
+                'media_download_status' => $message->media_download_status,
                 'sent_at' => $message->sent_at?->toISOString(),
                 'received_at' => $message->received_at?->toISOString(),
                 'created_at' => $message->created_at?->toISOString(),
@@ -74,5 +141,73 @@ class WhatsappConversationsController extends Controller
                 ? 'No hay conversaciones persistidas todavía. Ejecutá php artisan whatsapp:sync-initial.'
                 : null,
         ]);
+    }
+
+    private static function likeContains(string $value): string
+    {
+        return '%'.str_replace(
+            ['\\', '%', '_', '['],
+            ['\\\\', '\\%', '\\_', '\\['],
+            $value,
+        ).'%';
+    }
+
+    private static function likeSql(string $column): string
+    {
+        return "{$column} LIKE ? ESCAPE '\\'";
+    }
+
+    private static function messagePreview(?Message $message): ?string
+    {
+        if ($message === null) {
+            return null;
+        }
+
+        if (is_string($message->body) && trim($message->body) !== '') {
+            return $message->body;
+        }
+
+        return match ($message->type) {
+            'image' => 'Imagen',
+            'video' => 'Video',
+            'audio' => 'Audio',
+            'document' => 'Documento',
+            default => null,
+        };
+    }
+
+    private static function applyChatSearch(Builder $query, string $chatSearch): Builder
+    {
+        $like = self::likeContains($chatSearch);
+
+        return $query->where(function (Builder $query) use ($like): void {
+            $query
+                ->whereRaw(self::likeSql('title'), [$like])
+                ->orWhereRaw(self::likeSql('external_id'), [$like])
+                ->orWhereHas('contact', function (Builder $query) use ($like): void {
+                    $query
+                        ->whereRaw(self::likeSql('name'), [$like])
+                        ->orWhereRaw(self::likeSql('push_name'), [$like])
+                        ->orWhereRaw(self::likeSql('phone'), [$like])
+                        ->orWhereRaw(self::likeSql('external_id'), [$like]);
+                });
+        });
+    }
+
+    private static function withLatestMessageSnapshot(Builder $query): Builder
+    {
+        return $query->addSelect([
+            'latest_message_id' => self::latestMessageSubquery()->select('id'),
+            'latest_message_timestamp' => self::latestMessageSubquery()->selectRaw('COALESCE(sent_at, received_at, created_at)'),
+        ]);
+    }
+
+    private static function latestMessageSubquery(): Builder
+    {
+        return Message::query()
+            ->whereColumn('conversation_id', 'conversations.id')
+            ->orderByRaw('COALESCE(sent_at, received_at, created_at) desc')
+            ->orderByDesc('id')
+            ->limit(1);
     }
 }

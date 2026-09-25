@@ -4,7 +4,7 @@ import type { FormEvent } from "react";
 
 type Operator = {
     name: string;
-    email: string;
+    usuario: string;
 };
 
 type ConnectProps = {
@@ -30,6 +30,7 @@ type ConnectProps = {
 export default function Connect({ operator, flash, openwa }: ConnectProps) {
     const startForm = useForm({});
     const logoutForm = useForm({});
+    const disconnectForm = useForm({});
 
     const sessionId =
         readText(openwa.session, "id") ??
@@ -41,7 +42,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
         readText(openwa.health, "status") ??
         (openwa.health ? "Respondió" : "Sin respuesta");
     const hasQrCode = Boolean(openwa.qrCode?.qrCode);
-    const canViewConversations = Boolean(openwa.session);
+    const hasSession = Boolean(openwa.session);
 
     useEffect(() => {
         if (hasQrCode || sessionStatus === "ready") {
@@ -65,7 +66,12 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
 
     function logout(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        logoutForm.post("/testing-access/logout");
+        logoutForm.post("/logout");
+    }
+
+    function disconnect(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        disconnectForm.post("/whatsapp/disconnect");
     }
 
     return (
@@ -73,7 +79,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
             <Head title="Conectar WhatsApp" />
 
             <main className="min-h-screen bg-gray-50 px-6 py-12 text-black">
-                <section className="mx-auto w-full max-w-6xl rounded-3xl border border-black/10 bg-white p-8 shadow-2xl shadow-black/30">
+                <section className="mx-auto w-full max-w-6xl rounded-3xl border border-black/10 bg-white p-8">
                     <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
                         <div>
                             <h1 className="text-3xl font-semibold tracking-tight text-black">
@@ -86,7 +92,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                 <button
                                     type="submit"
                                     disabled={startForm.processing}
-                                    className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-64"
+                                    className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-48"
                                 >
                                     {startForm.processing
                                         ? "Conectando..."
@@ -94,20 +100,23 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                 </button>
                             </form>
 
-                            {canViewConversations && (
-                                <a
-                                    href="/whatsapp/conversations"
-                                    className="rounded-xl border border-gray-300 px-4 py-3 text-center text-sm font-semibold text-black transition hover:border-black lg:w-64"
-                                >
-                                    Ver conversaciones
-                                </a>
+                            {hasSession && (
+                                <form onSubmit={disconnect}>
+                                    <button
+                                        type="submit"
+                                        disabled={disconnectForm.processing}
+                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-black transition hover:border-red-600 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-48"
+                                    >
+                                        Cerrar WhatsApp
+                                    </button>
+                                </form>
                             )}
 
                             <form onSubmit={logout}>
                                 <button
                                     type="submit"
                                     disabled={logoutForm.processing}
-                                    className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-black transition hover:border-black disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-64"
+                                    className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-black transition hover:border-black disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-32"
                                 >
                                     Salir
                                 </button>
@@ -143,10 +152,10 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
 
                                 <div>
                                     <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                        Email
+                                        Usuario
                                     </dt>
                                     <dd className="mt-1 font-medium text-black">
-                                        {operator?.email ?? "testing@local.app"}
+                                        {operator?.usuario ?? "testing"}
                                     </dd>
                                 </div>
                             </dl>

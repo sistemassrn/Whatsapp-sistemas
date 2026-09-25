@@ -80,6 +80,17 @@ class OpenWaClient
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    public function logoutSession(string $sessionId): array
+    {
+        return $this->request()
+            ->post("sessions/{$sessionId}/logout")
+            ->throw()
+            ->json();
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     public function qr(string $sessionId): ?array
@@ -118,6 +129,88 @@ class OpenWaClient
             ->get("sessions/{$sessionId}/messages/{$encodedChatId}/history", [
                 'limit' => $limit,
             ])
+            ->throw()
+            ->json();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendTextMessage(string $sessionId, string $chatId, string $text): array
+    {
+        return $this->request()
+            ->post("sessions/{$sessionId}/messages/send-text", [
+                'chatId' => $chatId,
+                'text' => $text,
+            ])
+            ->throw()
+            ->json();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendImageMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null): array
+    {
+        return $this->sendMediaMessage($sessionId, 'send-image', [
+            'chatId' => $chatId,
+            'base64' => $base64,
+            'mimetype' => $mimeType,
+            'filename' => $filename,
+            'caption' => $caption,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendVideoMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null): array
+    {
+        return $this->sendMediaMessage($sessionId, 'send-video', [
+            'chatId' => $chatId,
+            'base64' => $base64,
+            'mimetype' => $mimeType,
+            'filename' => $filename,
+            'caption' => $caption,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendAudioMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, bool $ptt = false): array
+    {
+        return $this->sendMediaMessage($sessionId, 'send-audio', [
+            'chatId' => $chatId,
+            'base64' => $base64,
+            'mimetype' => $mimeType,
+            'filename' => $filename,
+            'ptt' => $ptt,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendDocumentMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null): array
+    {
+        return $this->sendMediaMessage($sessionId, 'send-document', [
+            'chatId' => $chatId,
+            'base64' => $base64,
+            'mimetype' => $mimeType,
+            'filename' => $filename,
+            'caption' => $caption,
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    private function sendMediaMessage(string $sessionId, string $endpoint, array $payload): array
+    {
+        return $this->request()
+            ->post("sessions/{$sessionId}/messages/{$endpoint}", $payload)
             ->throw()
             ->json();
     }

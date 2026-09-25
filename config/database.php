@@ -114,6 +114,20 @@ return [
             // 'trust_server_certificate' => env('DB_TRUST_SERVER_CERTIFICATE', 'false'),
         ],
 
+        'nexosrn' => [
+            'driver' => 'sqlsrv',
+            'host' => env('NEXOSRN_DB_HOST', 'localhost'),
+            'port' => env('NEXOSRN_DB_PORT', '1433'),
+            'database' => env('NEXOSRN_DB_DATABASE', 'NexoSRN'),
+            'username' => env('NEXOSRN_DB_USERNAME', ''),
+            'password' => env('NEXOSRN_DB_PASSWORD', ''),
+            'charset' => env('NEXOSRN_DB_CHARSET', 'utf8'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'encrypt' => env('NEXOSRN_DB_ENCRYPT', 'yes'),
+            'trust_server_certificate' => env('NEXOSRN_DB_TRUST_SERVER_CERTIFICATE', 'true'),
+        ],
+
     ],
 
     /*

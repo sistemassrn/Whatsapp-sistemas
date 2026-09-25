@@ -323,12 +323,15 @@ class SyncInitialWhatsapp extends Command
             if (is_numeric($value)) {
                 $timestamp = (int) $value;
 
-                return Carbon::createFromTimestamp($timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp);
+                return Carbon::createFromTimestamp(
+                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
+                    config('app.timezone'),
+                );
             }
 
             if (is_string($value) && trim($value) !== '') {
                 try {
-                    return Carbon::parse($value);
+                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
                 } catch (\Throwable) {
                     continue;
                 }
