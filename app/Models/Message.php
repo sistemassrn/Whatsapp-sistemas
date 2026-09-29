@@ -25,6 +25,12 @@ use Illuminate\Support\Carbon;
  * @property string|null $media_download_status
  * @property string|null $media_error
  * @property array<string, mixed>|null $media_metadata
+ * @property Carbon|null $edited_at
+ * @property Carbon|null $deleted_at
+ * @property string|null $remote_edit_status
+ * @property string|null $remote_delete_status
+ * @property string|null $edit_error
+ * @property string|null $delete_error
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property-read Conversation $conversation
@@ -53,6 +59,12 @@ class Message extends WhatsappModel
         'media_download_status',
         'media_error',
         'media_metadata',
+        'edited_at',
+        'deleted_at',
+        'remote_edit_status',
+        'remote_delete_status',
+        'edit_error',
+        'delete_error',
     ];
 
     /**
@@ -65,6 +77,8 @@ class Message extends WhatsappModel
         return [
             'sent_at' => 'datetime',
             'received_at' => 'datetime',
+            'edited_at' => 'datetime',
+            'deleted_at' => 'datetime',
             'media_metadata' => 'array',
         ];
     }

@@ -55,8 +55,10 @@ it('auto-starts a missing session on the connect page and shows QR status', func
     $client->shouldReceive('findSessionByName')->once()->andReturn(null);
     $client->shouldReceive('createSession')->once()->andReturn([
         'id' => 'session-1',
+        'name' => 'whatsapp-sistemas',
         'status' => 'created',
         'engineLoaded' => false,
+        'token' => 'secret-token',
     ]);
     $client->shouldReceive('startSession')->once()->with('session-1')->andReturn([
         'id' => 'session-1',
@@ -64,8 +66,10 @@ it('auto-starts a missing session on the connect page and shows QR status', func
     ]);
     $client->shouldReceive('findSessionByName')->once()->andReturn([
         'id' => 'session-1',
+        'name' => 'whatsapp-sistemas',
         'status' => 'qr_ready',
         'engineLoaded' => true,
+        'token' => 'secret-token',
     ]);
     $client->shouldReceive('qr')->once()->with('session-1')->andReturn([
         'qrCode' => 'data:image/png;base64,testing',
@@ -79,6 +83,13 @@ it('auto-starts a missing session on the connect page and shows QR status', func
         ->assertInertia(fn (Assert $page) => $page
             ->component('whatsapp/connect')
             ->where('openwa.started', true)
+            ->where('openwa.autoStarted', true)
+            ->where('openwa.status', 'qr_ready')
+            ->where('openwa.isReady', false)
+            ->where('openwa.isStarted', true)
+            ->where('openwa.session.name', 'whatsapp-sistemas')
+            ->missing('openwa.session.token')
+            ->has('openwa.lastCheckedAt')
             ->where('openwa.qrCode.status', 'qr_ready'),
         );
 });

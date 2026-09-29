@@ -25,6 +25,7 @@ class WhatsappConnectionController extends Controller
             'operator' => $request->user() === null ? null : [
                 'name' => $request->user()->nombre ?: $request->user()->usuario,
                 'usuario' => $request->user()->usuario,
+                'ope_datatech' => $request->user()->ope_datatech,
             ],
             'flash' => [
                 'success' => session('success'),
@@ -45,14 +46,14 @@ class WhatsappConnectionController extends Controller
             if ($sessionId === null) {
                 return redirect()
                     ->back()
-                    ->with('error', 'OpenWA respondió la sesión, pero no informó un identificador válido.');
+                    ->with('error', 'No pudimos conectar. Reintentá en unos segundos.');
             }
 
             $client->startSession($sessionId);
 
             return redirect()
                 ->back()
-                ->with('success', 'Sesión de WhatsApp iniciada. Si el QR está disponible, va a aparecer al refrescar la pantalla.');
+                ->with('success', 'Preparando conexión…');
         } catch (ConnectionException|RequestException $exception) {
             return redirect()
                 ->back()
@@ -70,7 +71,7 @@ class WhatsappConnectionController extends Controller
             if ($session === null) {
                 return redirect()
                     ->route('whatsapp.connect')
-                    ->with('success', 'No había una sesión de WhatsApp activa para cerrar.');
+                    ->with('success', 'Sesión cerrada.');
             }
 
             $sessionId = $connectionStatus->sessionId($session);
@@ -78,14 +79,14 @@ class WhatsappConnectionController extends Controller
             if ($sessionId === null) {
                 return redirect()
                     ->route('whatsapp.connect')
-                    ->with('error', 'OpenWA encontró la sesión, pero no informó un identificador válido para cerrarla.');
+                    ->with('error', 'No pudimos cerrar la sesión. Reintentá en unos segundos.');
             }
 
             $client->logoutSession($sessionId);
 
             return redirect()
                 ->route('whatsapp.connect')
-                ->with('success', 'Sesión de WhatsApp cerrada. Para volver a operar, escaneá el QR si OpenWA lo solicita.');
+                ->with('success', 'Sesión cerrada.');
         } catch (ConnectionException|RequestException $exception) {
             return redirect()
                 ->route('whatsapp.connect')

@@ -1,10 +1,12 @@
 import { Head, router, useForm } from "@inertiajs/react";
 import { useEffect } from "react";
 import type { FormEvent } from "react";
+import toast from "react-hot-toast";
 
 type Operator = {
     name: string;
     usuario: string;
+    ope_datatech: number;
 };
 
 type ConnectProps = {
@@ -23,6 +25,13 @@ type ConnectProps = {
             qrCode?: string;
             status?: string;
         } | null;
+        status: string;
+        isReady: boolean;
+        isStarted: boolean;
+        canStart: boolean;
+        started: boolean;
+        autoStarted: boolean;
+        lastCheckedAt: string;
         error?: string | null;
     };
 };
@@ -32,20 +41,41 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
     const logoutForm = useForm({});
     const disconnectForm = useForm({});
 
-    const sessionId =
-        readText(openwa.session, "id") ??
-        readText(openwa.session, "_id") ??
-        readText(openwa.session, "sessionId");
-    const sessionStatus =
-        readText(openwa.session, "status") ?? "Sin estado informado";
+    const sessionStatus = openwa.status || "Sin estado informado";
     const healthStatus =
         readText(openwa.health, "status") ??
         (openwa.health ? "Respondió" : "Sin respuesta");
     const hasQrCode = Boolean(openwa.qrCode?.qrCode);
     const hasSession = Boolean(openwa.session);
+    const hasBlockingError = Boolean(flash?.error || (openwa.error && !isRecoverableConnectionStatus(sessionStatus)));
+    const isLoadingQr = !hasQrCode && !hasBlockingError && !openwa.isReady;
+    const qrStatusMessage = statusMessage({
+        hasQrCode,
+        hasError: hasBlockingError,
+        isLoadingQr,
+        openwa,
+    });
 
     useEffect(() => {
-        if (hasQrCode || sessionStatus === "ready") {
+        if (flash?.success) {
+            toast.success(flash.success);
+        }
+
+        if (flash?.error || (openwa.error && !isRecoverableConnectionStatus(sessionStatus))) {
+            toast.error(flash?.error ?? "No pudimos conectar. Reintentá en unos segundos.");
+        }
+    }, [flash?.error, flash?.success, openwa.error, sessionStatus]);
+
+    useEffect(() => {
+        if (!openwa.isReady) {
+            return;
+        }
+
+        router.visit("/whatsapp/conversations");
+    }, [openwa.isReady]);
+
+    useEffect(() => {
+        if (openwa.isReady || hasBlockingError) {
             return;
         }
 
@@ -57,7 +87,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
         }, 3000);
 
         return () => window.clearInterval(interval);
-    }, [hasQrCode, sessionStatus]);
+    }, [hasBlockingError, openwa.isReady]);
 
     function start(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
@@ -76,150 +106,111 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
 
     return (
         <>
-            <Head title="Conectar WhatsApp" />
+            <Head title="Escanear QR" />
 
-            <main className="min-h-screen bg-gray-50 px-6 py-12 text-black">
-                <section className="mx-auto w-full max-w-6xl rounded-3xl border border-black/10 bg-white p-8">
-                    <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
-                        <div>
-                            <h1 className="text-3xl font-semibold tracking-tight text-black">
-                                Conectar WhatsApp con OpenWA
-                            </h1>
-                        </div>
-
-                        <div className="flex shrink-0 gap-2">
-                            <form onSubmit={start}>
-                                <button
-                                    type="submit"
-                                    disabled={startForm.processing}
-                                    className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-48"
-                                >
-                                    {startForm.processing
-                                        ? "Conectando..."
-                                        : "Iniciar sesión"}
-                                </button>
-                            </form>
-
-                            {hasSession && (
-                                <form onSubmit={disconnect}>
-                                    <button
-                                        type="submit"
-                                        disabled={disconnectForm.processing}
-                                        className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-black transition hover:border-red-600 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-48"
-                                    >
-                                        Cerrar WhatsApp
-                                    </button>
-                                </form>
-                            )}
-
-                            <form onSubmit={logout}>
-                                <button
-                                    type="submit"
-                                    disabled={logoutForm.processing}
-                                    className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold text-black transition hover:border-black disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto lg:w-32"
-                                >
-                                    Salir
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-
-                    {(flash?.success || flash?.error || openwa.error) && (
-                        <div className="mt-6 space-y-3">
-                            {flash?.success && (
-                                <Notice tone="success" message={flash.success} />
-                            )}
-                            {(flash?.error || openwa.error) && (
-                                <Notice
-                                    tone="error"
-                                    message={flash?.error ?? openwa.error ?? ""}
+            <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-6 py-12 text-white">
+                <section className="mx-auto w-full max-w-5xl rounded-3xl border border-white/10 bg-zinc-900 p-6 shadow-2xl shadow-black/50 sm:p-8">
+                    <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
+                        <div className="flex min-h-full flex-col">
+                            <dl className="grid gap-4 rounded-2xl border border-white/10 bg-zinc-900 p-5 sm:grid-cols-2">
+                                <Status label="Estado actual" value={humanStatus(sessionStatus)} />
+                                <Status
+                                    label="Operador"
+                                    value={operator?.name ?? "Operador demo"}
                                 />
-                            )}
-                        </div>
-                    )}
-
-                    <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-                        <div>
-                            <dl className="grid gap-4 rounded-2xl bg-gray-100 p-5 sm:grid-cols-2">
-                                <div>
-                                    <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                        Operador
-                                    </dt>
-                                    <dd className="mt-1 font-medium text-black">
-                                        {operator?.name ?? "Operador Demo"}
-                                    </dd>
-                                </div>
-
-                                <div>
-                                    <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                        Usuario
-                                    </dt>
-                                    <dd className="mt-1 font-medium text-black">
-                                        {operator?.usuario ?? "testing"}
-                                    </dd>
-                                </div>
+                                <Status
+                                    label="Usuario"
+                                    value={operator?.usuario ?? "testing"}
+                                />
+                                <Status
+                                    label="Nro. operador"
+                                    value={operator?.ope_datatech ?? "Nro. operador demo"}
+                                />
+                                <Status label="Servicio" value={healthStatus} />
+                                <Status
+                                    label="Última consulta"
+                                    value={formatDateTime(openwa.lastCheckedAt)}
+                                />
                             </dl>
 
-                            <div className="mt-6 grid gap-4 rounded-2xl border border-gray-200 p-5 sm:grid-cols-2">
-                                <Status
-                                    label="Configuración"
-                                    value={
-                                        openwa.configured
-                                            ? "Configurado"
-                                            : "Falta OPENWA_API_KEY"
-                                    }
-                                />
-                                <Status
-                                    label="OpenWA health"
-                                    value={healthStatus}
-                                />
-                                <Status label="URL base" value={openwa.baseUrl} />
-                                <Status
-                                    label="Sesión configurada"
-                                    value={openwa.sessionName}
-                                />
-                                <Status
-                                    label="Sesión encontrada"
-                                    value={openwa.session ? "Sí" : "No"}
-                                />
-                                <Status
-                                    label="ID de sesión"
-                                    value={sessionId ?? "No disponible"}
-                                />
-                                <Status
-                                    label="Estado de sesión"
-                                    value={sessionStatus}
-                                />
-                                <Status
-                                    label="Estado de QR"
-                                    value={openwa.qrCode?.status ?? "No disponible"}
-                                />
+                            <div className="mt-6 rounded-2xl border border-white/10 bg-zinc-900/70 p-5 text-sm leading-6 text-zinc-300">
+                                <p>
+                                    Escaneá el código cuando aparezca. Si no aparece, apretá en "Cerrar WhatsApp" e intentá de nuevo en unos segundos.
+                                </p>
                             </div>
 
-                            {sessionStatus === "ready" && (
-                                <div className="mt-6 rounded-2xl border border-green-200 bg-green-50 p-5 text-sm leading-6 text-green-800">
+                            {openwa.isReady && (
+                                <div className="mt-6 rounded-2xl border border-green-500/30 bg-green-950/40 p-5 text-sm leading-6 text-green-200">
                                     WhatsApp está conectado. El QR ya no es necesario y podés consultar conversaciones.
                                 </div>
                             )}
+
+                            <div className="mt-auto flex flex-col justify-end gap-2 pt-6 sm:flex-row sm:flex-wrap lg:justify-end">
+                                {/* <form onSubmit={start}>
+                                    <button
+                                        type="submit"
+                                        disabled={startForm.processing || !openwa.canStart}
+                                        className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                                    >
+                                        {startForm.processing
+                                            ? "Conectando..."
+                                            : "Iniciar sesión"}
+                                    </button>
+                                </form> */}
+
+                                {hasSession && (
+                                    <form onSubmit={disconnect}>
+                                        <button
+                                            type="submit"
+                                            disabled={disconnectForm.processing}
+                                            className="w-full rounded-xl border border-red-500 px-4 py-3 text-sm font-semibold text-red-300 transition hover:border-red-600 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                                        >
+                                            Cerrar WhatsApp
+                                        </button>
+                                    </form>
+                                )}
+
+                                <form onSubmit={logout}>
+                                    <button
+                                        type="submit"
+                                        disabled={logoutForm.processing}
+                                        className="w-full rounded-xl border border-zinc-700 px-4 py-3 text-sm font-semibold text-white transition hover:border-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                                    >
+                                        Salir
+                                    </button>
+                                </form>
+                            </div>
                         </div>
 
-                        <aside className="rounded-2xl bg-gray-100 p-5 lg:sticky lg:top-6">
-                            <h2 className="text-lg font-semibold text-black">Código QR</h2>
-                            <p className="mt-2 text-sm leading-6 text-gray-600">
-                                Escanealo desde WhatsApp para vincular esta sesión compartida.
-                            </p>
-
-                            {hasQrCode ? (
-                                <img
-                                    src={openwa.qrCode?.qrCode}
-                                    alt="QR para vincular WhatsApp"
-                                    className="mt-2 h-auto w-full rounded-xl border border-gray-200 bg-white p-3"
-                                />
-                            ) : (
-                                <p className="mt-4 rounded-xl border border-gray-200 bg-white p-4 text-sm leading-6 text-gray-600">
-                                    El QR aparece cuando OpenWA lo informa disponible. Esta pantalla lo consulta automáticamente cada 3 segundos.
-                                </p>
-                            )}
+                        <aside className="flex min-h-full flex-col rounded-2xl border border-white/10 bg-zinc-900 p-5 lg:sticky lg:top-6">
+                             <div>
+                                <p className="text-sm font-medium text-zinc-200">{qrStatusMessage}</p>
+                                <div className="mt-4 flex aspect-square w-full items-center justify-center rounded-xl border border-white/10 bg-white p-4">
+                                {hasQrCode ? (
+                                    <img
+                                        src={openwa.qrCode?.qrCode}
+                                        alt="QR para vincular WhatsApp"
+                                        className="h-full w-full object-contain"
+                                    />
+                                ) : hasBlockingError ? (
+                                    <div className="text-center text-sm text-red-700">
+                                        <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-red-200 bg-red-50 text-xl font-semibold">
+                                            !
+                                        </div>
+                                        <p className="mt-3 font-medium">No se pudo obtener el QR.</p>
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-sm text-zinc-700">
+                                        <div className="mx-auto h-10 w-10 animate-spin rounded-full border-2 border-gray-200 border-t-green-600" />
+                                        <p className="mt-4 font-medium">
+                                            {isLoadingQr
+                                                ? "Preparando conexión…"
+                                                : "Esperando estado..."}
+                                        </p>
+                                    </div>
+                                )}
+                                </div>
+                            </div>
                         </aside>
                     </div>
                 </section>
@@ -228,38 +219,86 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
     );
 }
 
-function Status({ label, value }: { label: string; value: string }) {
+function Status({ label, value }: { label: string; value: string | number; }) {
     return (
         <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+            <dt className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
                 {label}
             </dt>
-            <dd className="mt-1 wrap-break-word font-medium text-black">
+            <dd className="mt-1 wrap-break-word font-medium text-white">
                 {value}
             </dd>
         </div>
     );
 }
 
-function Notice({
-    tone,
-    message,
+function statusMessage({
+    hasQrCode,
+    hasError,
+    isLoadingQr,
+    openwa,
 }: {
-    tone: "success" | "error";
-    message: string;
-}) {
-    const classes =
-        tone === "success"
-            ? "border-green-200 bg-green-50 text-green-800"
-            : "border-red-200 bg-red-50 text-red-700";
+    hasQrCode: boolean;
+    hasError: boolean;
+    isLoadingQr: boolean;
+    openwa: ConnectProps["openwa"];
+}): string {
+    if (hasError) {
+        return openwa.error ?? "No pudimos conectar. Reintentá en unos segundos.";
+    }
 
-    return (
-        <p
-            className={`rounded-xl border px-4 py-3 text-sm font-medium ${classes}`}
-        >
-            {message}
-        </p>
-    );
+    if (openwa.isReady) {
+        return "WhatsApp está conectado.";
+    }
+
+    if (hasQrCode) {
+        return "Escaneá el código para conectar WhatsApp.";
+    }
+
+    if (isLoadingQr) {
+        return openwa.isStarted
+            ? "Preparando conexión…"
+            : "Preparando conexión…";
+    }
+
+    return "Preparando conexión…";
+}
+
+function isRecoverableConnectionStatus(status: string): boolean {
+    return [
+        "action_required",
+        "authenticating",
+        "created",
+        "disconnected",
+        "initializing",
+        "qr_ready",
+    ].includes(status);
+}
+
+function humanStatus(status: string): string {
+    const statuses: Record<string, string> = {
+        action_required: "Requiere acción",
+        authenticating: "Autenticando",
+        created: "Creada",
+        disconnected: "Desconectada",
+        error: "Error",
+        initializing: "Inicializando",
+        not_configured: "Sin configurar",
+        qr_ready: "QR disponible",
+        ready: "Lista",
+    };
+
+    return statuses[status] ?? status;
+}
+
+function formatDateTime(value: string): string {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return "No disponible";
+    }
+
+    return date.toLocaleString();
 }
 
 function readText(

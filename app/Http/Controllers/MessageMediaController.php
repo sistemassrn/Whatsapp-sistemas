@@ -14,9 +14,19 @@ class MessageMediaController extends Controller
             abort(404);
         }
 
-        $disk = Storage::disk('whatsapp_media');
+        if (str_contains($message->media_path, '..') || str_starts_with($message->media_path, '/') || str_starts_with($message->media_path, '\\')) {
+            abort(403);
+        }
 
-        if (! $disk->exists($message->media_path)) {
+        try {
+            $disk = Storage::disk('whatsapp_media');
+
+            if (! $disk->exists($message->media_path)) {
+                abort(404);
+            }
+
+            $contents = $disk->get($message->media_path);
+        } catch (\Throwable) {
             abort(404);
         }
 
@@ -24,7 +34,7 @@ class MessageMediaController extends Controller
         $filename = $message->media_filename ?: basename($message->media_path);
         $disposition = $this->shouldRenderInline($mimeType) ? 'inline' : 'attachment';
 
-        return response($disk->get($message->media_path), 200, [
+        return response($contents, 200, [
             'Content-Type' => $mimeType,
             'Content-Disposition' => $disposition.'; filename="'.str_replace('"', '', $filename).'"',
             'X-Content-Type-Options' => 'nosniff',

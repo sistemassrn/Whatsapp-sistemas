@@ -8,6 +8,7 @@ use App\Services\WhatsappConnectionStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -24,13 +25,11 @@ class WhatsappConversationsController extends Controller
         $validated = $request->validate([
             'chat' => ['nullable', 'string'],
             'chat_search' => ['nullable', 'string', 'max:100'],
-            'message_search' => ['nullable', 'string', 'max:200'],
             'message_limit' => ['nullable', 'integer'],
         ]);
 
         $selectedChatId = $request->string('chat')->toString();
         $chatSearch = trim((string) ($validated['chat_search'] ?? ''));
-        $messageSearch = trim((string) ($validated['message_search'] ?? ''));
         $selectedConversation = null;
         $messageLimit = min(max($request->integer('message_limit', 50), 1), 300);
         $selectedConversationMessageCount = 0;
@@ -66,10 +65,7 @@ class WhatsappConversationsController extends Controller
                 }
 
                 $messagesQuery = Message::query()
-                    ->where('conversation_id', $selectedConversation->id)
-                    ->when($messageSearch !== '', function ($query) use ($messageSearch): void {
-                        $query->whereRaw(self::likeSql('body'), [self::likeContains($messageSearch)]);
-                    });
+                    ->where('conversation_id', $selectedConversation->id);
 
                 $selectedConversationMessageCount = (clone $messagesQuery)->count();
 
@@ -94,7 +90,7 @@ class WhatsappConversationsController extends Controller
             ],
             'filters' => [
                 'chat_search' => $chatSearch,
-                'message_search' => $messageSearch,
+                'message_search' => '',
             ],
             'flash' => [
                 'success' => session('success'),
@@ -108,8 +104,10 @@ class WhatsappConversationsController extends Controller
                 return [
                     'id' => $conversation->id,
                     'external_id' => $conversation->external_id,
-                    'title' => $conversation->title,
-                    'contact_name' => $conversation->contact?->name ?? $conversation->contact?->push_name,
+                    'contact_id' => $conversation->contact_id,
+                    'title' => self::conversationDisplayName($conversation),
+                    'contact_name' => self::contactDisplayName($conversation),
+                    'avatar_url' => $conversation->contact?->profile_photo_url,
                     'last_message_preview' => self::messagePreview($latestMessage),
                     'last_message_body' => $latestMessage?->body,
                     'last_message_direction' => $latestMessage?->direction,
@@ -126,6 +124,15 @@ class WhatsappConversationsController extends Controller
                 'body' => $message->body,
                 'type' => $message->type,
                 'status' => $message->status,
+                'error_message' => $message->error_message,
+                'edited_at' => $message->edited_at?->toISOString(),
+                'deleted_at' => $message->deleted_at?->toISOString(),
+                'remote_edit_status' => $message->remote_edit_status,
+                'remote_delete_status' => $message->remote_delete_status,
+                'edit_error' => $message->edit_error,
+                'delete_error' => $message->delete_error,
+                'can_edit' => self::canMutateMessage($message),
+                'can_delete' => self::canMutateMessage($message),
                 'media_url' => $message->media_disk === 'whatsapp_media' && $message->media_path !== null
                     ? route('whatsapp.messages.media.show', $message)
                     : null,
@@ -133,12 +140,13 @@ class WhatsappConversationsController extends Controller
                 'media_filename' => $message->media_filename,
                 'media_size_bytes' => $message->media_size_bytes,
                 'media_download_status' => $message->media_download_status,
+                'media_error' => $message->media_error,
                 'sent_at' => $message->sent_at?->toISOString(),
                 'received_at' => $message->received_at?->toISOString(),
                 'created_at' => $message->created_at?->toISOString(),
             ]),
             'emptyState' => $conversations->isEmpty()
-                ? 'No hay conversaciones persistidas todavía. Ejecutá php artisan whatsapp:sync-initial.'
+                ? 'No existen conversaciones actualmente.'
                 : null,
         ]);
     }
@@ -157,10 +165,24 @@ class WhatsappConversationsController extends Controller
         return "{$column} LIKE ? ESCAPE '\\'";
     }
 
+    private static function canMutateMessage(Message $message): bool
+    {
+        return $message->direction === 'outbound'
+            && $message->type === 'text'
+            && $message->status === 'accepted'
+            && $message->external_id !== null
+            && $message->external_id !== ''
+            && $message->deleted_at === null;
+    }
+
     private static function messagePreview(?Message $message): ?string
     {
         if ($message === null) {
             return null;
+        }
+
+        if ($message->deleted_at !== null) {
+            return 'Mensaje eliminado';
         }
 
         if (is_string($message->body) && trim($message->body) !== '') {
@@ -172,8 +194,63 @@ class WhatsappConversationsController extends Controller
             'video' => 'Video',
             'audio' => 'Audio',
             'document' => 'Documento',
-            default => null,
+            'text' => 'Mensaje sin contenido',
+            default => 'Archivo',
         };
+    }
+
+    private static function conversationDisplayName(Conversation $conversation): string
+    {
+        foreach ([
+            $conversation->title,
+            $conversation->contact?->name,
+            $conversation->contact?->push_name,
+            $conversation->contact?->phone,
+            $conversation->contact?->external_id,
+            $conversation->external_id,
+        ] as $candidate) {
+            $displayName = self::cleanDisplayIdentifier($candidate);
+
+            if ($displayName !== null) {
+                return $displayName;
+            }
+        }
+
+        return 'Chat sin nombre';
+    }
+
+    private static function contactDisplayName(Conversation $conversation): ?string
+    {
+        foreach ([$conversation->contact?->name, $conversation->contact?->push_name, $conversation->contact?->phone] as $candidate) {
+            $displayName = self::cleanDisplayIdentifier($candidate);
+
+            if ($displayName !== null) {
+                return $displayName;
+            }
+        }
+
+        return null;
+    }
+
+    private static function cleanDisplayIdentifier(?string $value): ?string
+    {
+        $value = trim((string) $value);
+
+        if ($value === '') {
+            return null;
+        }
+
+        if (str_contains($value, '@')) {
+            $value = Str::before($value, '@');
+        }
+
+        $value = trim($value);
+
+        if ($value === '' || preg_match('/^[a-f0-9]{24,}$/i', $value) === 1) {
+            return null;
+        }
+
+        return $value;
     }
 
     private static function applyChatSearch(Builder $query, string $chatSearch): Builder

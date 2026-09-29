@@ -1,10 +1,19 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { Download, Paperclip, Search, Send, Smile, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { type FormEvent, type KeyboardEvent, type PointerEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, Download, MoreVertical, Paperclip, Pencil, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import toast from 'react-hot-toast';
 
 const MESSAGE_LIMIT_INCREMENT = 50;
 const MAX_MESSAGE_LIMIT = 300;
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 144;
+const MAX_FILES_PER_SEND = 3;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
+const CHAT_BACKGROUND_STYLE: CSSProperties = {
+    backgroundImage: "linear-gradient(rgba(9, 9, 11, 0.80), rgba(9, 9, 11, 0.80)), url('/img/fondochats.webp')",
+    backgroundRepeat: 'repeat',
+    backgroundSize: '420px auto',
+};
 
 type Operator = {
     name?: string;
@@ -21,8 +30,10 @@ type AuthUser = {
 type ConversationItem = {
     id: number;
     external_id: string;
+    contact_id: number | null;
     title: string | null;
     contact_name: string | null;
+    avatar_url: string | null;
     last_message_preview: string | null;
     last_message_body: string | null;
     last_message_direction: string | null;
@@ -36,11 +47,21 @@ type MessageItem = {
     body: string | null;
     type: 'text' | 'image' | 'video' | 'audio' | 'document' | string;
     status: string;
+    error_message: string | null;
+    edited_at: string | null;
+    deleted_at: string | null;
+    remote_edit_status: string | null;
+    remote_delete_status: string | null;
+    edit_error: string | null;
+    delete_error: string | null;
+    can_edit: boolean;
+    can_delete: boolean;
     media_url: string | null;
     media_mime_type: string | null;
     media_filename: string | null;
     media_size_bytes: number | null;
     media_download_status: string | null;
+    media_error: string | null;
     sent_at: string | null;
     received_at: string | null;
     created_at: string | null;
@@ -86,8 +107,9 @@ type Props = {
 };
 
 const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'emptyState', 'filters', 'selectedChatId'];
+const requestedAvatarContactIds = new Set<number>();
 
-export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, messages, emptyState, filters }: Props) {
+export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, messages, emptyState, filters, flash }: Props) {
     const { auth } = usePage<Props>().props;
     const selectedConversation = conversations.find((conversation) => conversation.external_id === selectedChatId) ?? null;
     const operatorName = operator?.name ?? auth?.user?.nombre ?? auth?.user?.usuario ?? 'Operador';
@@ -98,6 +120,40 @@ export default function Conversations({ operator, conversations, selectedChatId,
     useEffect(() => {
         setChatSearch(filters.chat_search);
     }, [filters.chat_search]);
+
+    useEffect(() => {
+        const timeout = window.setTimeout(() => {
+            if (chatSearch === filters.chat_search) {
+                return;
+            }
+
+            router.get(
+                '/whatsapp/conversations',
+                compactQuery({
+                    chat: selectedChatId,
+                    chat_search: chatSearch,
+                }),
+                {
+                    only: INBOX_RELOAD_PROPS,
+                    preserveScroll: true,
+                    preserveState: true,
+                    replace: true,
+                },
+            );
+        }, 300);
+
+        return () => window.clearTimeout(timeout);
+    }, [chatSearch, filters.chat_search, selectedChatId]);
+
+    useEffect(() => {
+        if (flash?.success) {
+            toast.success(flash.success);
+        }
+
+        if (flash?.error) {
+            toast.error(flash.error);
+        }
+    }, [flash?.error, flash?.success]);
 
     useEffect(() => {
         if (!selectedChatId) {
@@ -115,7 +171,6 @@ export default function Conversations({ operator, conversations, selectedChatId,
                 '/whatsapp/conversations',
                 compactQuery({
                     chat_search: filters.chat_search,
-                    message_search: filters.message_search,
                 }),
                 {
                     only: INBOX_RELOAD_PROPS,
@@ -129,7 +184,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
         document.addEventListener('keydown', deselectConversation);
 
         return () => document.removeEventListener('keydown', deselectConversation);
-    }, [filters.chat_search, filters.message_search, selectedChatId]);
+    }, [filters.chat_search, selectedChatId]);
 
     useEffect(() => {
         const interval = window.setInterval(() => {
@@ -160,14 +215,15 @@ export default function Conversations({ operator, conversations, selectedChatId,
         <>
             <Head title="Chats WhatsApp" />
 
-            <main className="min-h-screen bg-gray-50 p-4 text-black md:p-6">
-                <section className="mx-auto flex h-[calc(100vh-3rem)] w-full max-w-7xl overflow-hidden rounded-2xl border border-gray-200 bg-white">
-                    <aside className="flex w-full flex-col border-r border-gray-200 bg-white md:w-95 md:shrink-0">
-                        <div className="border-b border-gray-200 bg-gray-50 p-4">
+            <main className="min-h-screen bg-zinc-950 text-white">
+                {/* <section className="mx-auto flex h-[calc(100vh-3rem)] w-full max-w-7xl overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl shadow-black/50"> */}
+                <section className="flex h-[calc(100vh-0rem)] w-full border border-white/10 bg-zinc-950">
+                    <aside className="flex w-full flex-col border-r border-white/10 bg-zinc-900 md:w-115 md:shrink-0">
+                        <div className="border-b border-white/10 bg-zinc-900 p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div>
-                                    <h1 className="text-xl font-semibold text-black">Chats</h1>
-                                    <p className="mt-1 text-xs text-gray-500">
+                                    <h1 className="text-xl font-semibold text-white">Chats</h1>
+                                    <p className="mt-1 text-xs text-zinc-400">
                                         {operatorName}
                                     </p>
                                 </div>
@@ -177,7 +233,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                         <button
                                             type="submit"
                                             disabled={disconnectForm.processing}
-                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:border-red-600 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                            className="rounded-lg border border-red-600 bg-zinc-900 px-3 py-2 text-xs font-semibold text-red-300 transition hover:border-red-700 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             Cerrar sesión
                                         </button>
@@ -186,7 +242,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                         <button
                                             type="submit"
                                             disabled={logoutForm.processing}
-                                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-black transition hover:border-black disabled:cursor-not-allowed disabled:opacity-60"
+                                            className="rounded-lg border border-zinc-500 bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:border-white disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             Salir
                                         </button>
@@ -198,37 +254,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                 placeholder="Buscar chats o contactos"
                                 value={chatSearch}
                                 onChange={setChatSearch}
-                                onSubmit={() => {
-                                    router.get(
-                                        '/whatsapp/conversations',
-                                        compactQuery({
-                                            chat: selectedChatId,
-                                            chat_search: chatSearch,
-                                            message_search: filters.message_search,
-                                        }),
-                                        {
-                                            only: INBOX_RELOAD_PROPS,
-                                            preserveScroll: true,
-                                            preserveState: true,
-                                            replace: true,
-                                        },
-                                    );
-                                }}
+                                onSubmit={() => undefined}
                                 onClear={() => {
                                     setChatSearch('');
-                                    router.get(
-                                        '/whatsapp/conversations',
-                                        compactQuery({
-                                            chat: selectedChatId,
-                                            message_search: filters.message_search,
-                                        }),
-                                        {
-                                            only: INBOX_RELOAD_PROPS,
-                                            preserveScroll: true,
-                                            preserveState: true,
-                                            replace: true,
-                                        },
-                                    );
                                 }}
                                 className="mt-4"
                             />
@@ -242,7 +270,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
                         <div className="min-h-0 flex-1 overflow-y-auto">
                             {conversations.length === 0 ? (
-                                <p className="p-4 text-sm leading-6 text-gray-600">
+                                <p className="p-4 text-sm leading-6 text-zinc-400">
                                     {emptyState ?? 'No hay conversaciones para mostrar todavía.'}
                                 </p>
                             ) : (
@@ -258,7 +286,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                         </div>
                     </aside>
 
-                    <section className="hidden min-w-0 flex-1 flex-col bg-gray-50 md:flex">
+                    <section className="hidden min-w-0 flex-1 flex-col bg-zinc-950 md:flex" style={CHAT_BACKGROUND_STYLE}>
                         {selectedConversation ? (
                             <MessagePanel
                                 conversation={selectedConversation}
@@ -278,22 +306,57 @@ export default function Conversations({ operator, conversations, selectedChatId,
 }
 
 function ConversationRow({ conversation, active, filters }: { conversation: ConversationItem; active: boolean; filters: Props['filters'] }) {
+    const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
+
+    useEffect(() => {
+        setAvatarUrl(conversation.avatar_url);
+    }, [conversation.avatar_url]);
+
+    useEffect(() => {
+        if (conversation.contact_id === null || avatarUrl || requestedAvatarContactIds.has(conversation.contact_id)) {
+            return;
+        }
+
+        requestedAvatarContactIds.add(conversation.contact_id);
+
+        void fetch(`/whatsapp/contacts/${conversation.contact_id}/avatar`, {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken(),
+            },
+            body: JSON.stringify({}),
+        })
+            .then((response) => response.json() as Promise<{ avatar_url?: unknown }>)
+            .then((payload) => {
+                if (typeof payload.avatar_url === 'string' && payload.avatar_url !== '') {
+                    setAvatarUrl(payload.avatar_url);
+                }
+            })
+            .catch(() => undefined);
+    }, [avatarUrl, conversation.contact_id, conversation.avatar_url]);
+
     return (
         <a
             href={conversationHref(conversation.external_id, filters)}
-            className={`flex gap-3 border-b border-gray-100 px-4 py-3 transition ${active ? 'bg-green-50' : 'bg-white hover:bg-gray-50'}`}
+            className={`flex gap-3 border-b border-white/10 px-4 py-3 transition-all ${active ? 'bg-zinc-800 rounded-2xl m-1' : 'bg-zinc-900 hover:bg-zinc-800 hover:rounded-2xl m-1'}`}
         >
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-gray-100 text-sm font-semibold text-gray-700">
-                {initials(conversationTitle(conversation))}
-            </div>
+            {avatarUrl ? (
+                <img src={avatarUrl} alt="" className="size-11 shrink-0 rounded-full border border-white/10 object-cover" loading="lazy" />
+            ) : (
+                <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-zinc-800 text-sm font-semibold text-zinc-200">
+                    {initials(conversationTitle(conversation))}
+                </div>
+            )}
 
             <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-3">
-                    <p className="truncate text-sm font-semibold text-black">{conversationTitle(conversation)}</p>
-                    <time className="shrink-0 text-[11px] text-gray-500">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
+                    <p className="truncate text-sm font-semibold text-white">{conversationTitle(conversation)}</p>
+                    <time className="shrink-0 text-[11px] text-zinc-500">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
                 </div>
 
-                <p className="mt-1 truncate text-sm text-gray-600">
+                <p className="mt-1 truncate text-sm text-zinc-400">
                     {conversation.last_message_direction === 'outbound' ? 'Vos: ' : ''}
                     {conversation.last_message_preview ?? conversation.last_message_body ?? 'Sin vista previa'}
                 </p>
@@ -322,23 +385,57 @@ function MessagePanel({
     const previousScrollHeightRef = useRef(0);
     const previousScrollTopRef = useRef(0);
     const [isLoadingOlder, setIsLoadingOlder] = useState(false);
-    const [messageSearch, setMessageSearch] = useState(filters.message_search);
+    const [messageSearch, setMessageSearch] = useState('');
+    const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+    const messageRefs = useRef<Record<number, HTMLElement | null>>({});
     const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
+    const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const { data, setData, post, processing, errors, clearErrors, progress } = useForm<{
         body: string;
-        media: File | null;
+        media: File[];
         idempotency_key: string;
     }>({
         body: '',
-        media: null,
+        media: [],
         idempotency_key: generateIdempotencyKey(),
     });
 
     useEffect(() => {
-        setMessageSearch(filters.message_search);
-    }, [filters.message_search]);
+        setMessageSearch('');
+        setActiveMatchIndex(0);
+    }, [conversation.external_id]);
+
+    const normalizedMessageSearch = messageSearch.trim().toLocaleLowerCase();
+    const searchMatches = useMemo(() => {
+        if (normalizedMessageSearch === '') {
+            return [];
+        }
+
+        return messages
+            .filter((message) => (message.body ?? '').toLocaleLowerCase().includes(normalizedMessageSearch))
+            .map((message) => message.id);
+    }, [messages, normalizedMessageSearch]);
+
+    useLayoutEffect(() => {
+        setActiveMatchIndex(searchMatches.length > 0 ? searchMatches.length - 1 : 0);
+    }, [searchMatches]);
+
+    const activeMatchPosition = searchMatches.length === 0 ? 0 : Math.min(activeMatchIndex, searchMatches.length - 1);
+
+    useEffect(() => {
+        if (searchMatches.length === 0) {
+            return;
+        }
+
+        const activeMessageId = searchMatches[activeMatchPosition];
+
+        messageRefs.current[activeMessageId]?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center',
+        });
+    }, [activeMatchPosition, searchMatches]);
 
     useLayoutEffect(() => {
         const textarea = textareaRef.current;
@@ -394,7 +491,6 @@ function MessagePanel({
             {
                 chat: conversation.external_id,
                 chat_search: filters.chat_search,
-                message_search: filters.message_search,
                 message_limit: Math.min(messageLimit + MESSAGE_LIMIT_INCREMENT, MAX_MESSAGE_LIMIT),
             },
             {
@@ -425,7 +521,7 @@ function MessagePanel({
     };
 
     const sendMessage = () => {
-        if (processing || (data.body.trim() === '' && data.media === null)) {
+        if (processing || (data.body.trim() === '' && data.media.length === 0)) {
             return;
         }
 
@@ -436,7 +532,7 @@ function MessagePanel({
                 clearErrors();
                 setData({
                     body: '',
-                    media: null,
+                    media: [],
                     idempotency_key: generateIdempotencyKey(),
                 });
 
@@ -456,109 +552,203 @@ function MessagePanel({
         sendMessage();
     };
 
+    const addFiles = (incomingFiles: File[]) => {
+        if (incomingFiles.length === 0) {
+            return;
+        }
+
+        const nextFiles = [...data.media, ...incomingFiles];
+
+        if (nextFiles.length > MAX_FILES_PER_SEND) {
+            toast.error('Podés enviar hasta 3 archivos.');
+            return;
+        }
+
+        if (incomingFiles.some((file) => file.size > MAX_FILE_BYTES)) {
+            toast.error('Cada archivo puede pesar hasta 25 MB.');
+            return;
+        }
+
+        if (nextFiles.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_FILE_BYTES) {
+            toast.error('Los archivos no pueden superar 50 MB.');
+            return;
+        }
+
+        clearErrors('media');
+        setData('media', nextFiles);
+    };
+
+    const removeFile = (index: number) => {
+        setData('media', data.media.filter((_, fileIndex) => fileIndex !== index));
+
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    };
+
+    const handleFileInputChange = (files: FileList | null) => {
+        addFiles(Array.from(files ?? []));
+
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    };
+
+    const handleDrop = (event: DragEvent<HTMLElement>) => {
+        event.preventDefault();
+        setIsDraggingFiles(false);
+        addFiles(Array.from(event.dataTransfer.files ?? []));
+    };
+
+    const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+        const files = Array.from(event.clipboardData.files ?? []);
+
+        if (files.length === 0) {
+            return;
+        }
+
+        addFiles(files);
+    };
+
+    const goToPreviousMatch = () => {
+        if (searchMatches.length === 0) {
+            return;
+        }
+
+        setActiveMatchIndex((index) => (index - 1 + searchMatches.length) % searchMatches.length);
+    };
+
+    const goToNextMatch = () => {
+        if (searchMatches.length === 0) {
+            return;
+        }
+
+        setActiveMatchIndex((index) => (index + 1) % searchMatches.length);
+    };
+
     return (
         <>
-            <header className="border-b border-gray-200 bg-white p-4">
+            <header className="border-b border-white/10 bg-zinc-900 p-3 px-5">
                 <div className="flex items-center justify-between gap-4">
                     <div>
-                        <h2 className="text-lg font-semibold text-black">{conversationTitle(conversation)}</h2>
+                        <h2 className="text-lg font-semibold text-white">{conversationTitle(conversation)}</h2>
                     </div>
 
                     <SearchForm
                         placeholder="Buscar mensajes"
                         value={messageSearch}
                         onChange={setMessageSearch}
-                        onSubmit={() => {
-                            router.get(
-                                '/whatsapp/conversations',
-                                compactQuery({
-                                    chat: conversation.external_id,
-                                    chat_search: filters.chat_search,
-                                    message_search: messageSearch,
-                                }),
-                                {
-                                    only: INBOX_RELOAD_PROPS,
-                                    preserveScroll: true,
-                                    preserveState: true,
-                                    replace: true,
-                                },
-                            );
-                        }}
+                        onSubmit={goToNextMatch}
                         onClear={() => {
                             setMessageSearch('');
-                            router.get(
-                                '/whatsapp/conversations',
-                                compactQuery({
-                                    chat: conversation.external_id,
-                                    chat_search: filters.chat_search,
-                                }),
-                                {
-                                    only: INBOX_RELOAD_PROPS,
-                                    preserveScroll: true,
-                                    preserveState: true,
-                                    replace: true,
-                                },
-                            );
+                            setActiveMatchIndex(0);
                         }}
+                        actions={
+                            <>
+                                {normalizedMessageSearch !== '' ? (
+                                    <span className="text-xs text-zinc-500">
+                                        {searchMatches.length === 0 ? '0' : `${activeMatchPosition + 1}/${searchMatches.length}`}
+                                    </span>
+                                ) : null}
+                                <button type="button" onClick={goToPreviousMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado anterior">
+                                    <ChevronUp className="size-4" />
+                                </button>
+                                <button type="button" onClick={goToNextMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado siguiente">
+                                    <ChevronDown className="size-4" />
+                                </button>
+                            </>
+                        }
                         className="w-72"
                     />
                 </div>
             </header>
 
-            <div ref={scrollContainerRef} onScroll={handleMessagesScroll} className="min-h-0 flex-1 overflow-y-auto bg-gray-50 p-5">
+            <div
+                ref={scrollContainerRef}
+                onScroll={handleMessagesScroll}
+                onDragEnter={(event) => {
+                    if (event.dataTransfer.types.includes('Files')) {
+                        setIsDraggingFiles(true);
+                    }
+                }}
+                onDragOver={(event) => {
+                    if (event.dataTransfer.types.includes('Files')) {
+                        event.preventDefault();
+                    }
+                }}
+                onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                        setIsDraggingFiles(false);
+                    }
+                }}
+                onDrop={handleDrop}
+                className={`min-h-0 flex-1 overflow-y-auto bg-zinc-950 p-5 transition-all ${isDraggingFiles ? 'ring-2 ring-emerald-400/70 ring-inset rounded-xl' : ''}`}
+                style={CHAT_BACKGROUND_STYLE}
+            >
                 {messages.length === 0 ? (
-                    <p className="rounded-xl border border-gray-200 bg-white p-4 text-sm text-gray-600">
-                        {filters.message_search === '' ? 'No hay mensajes para este chat.' : 'No hay mensajes que coincidan con la búsqueda.'}
+                    <p className="rounded-xl border border-white/10 bg-zinc-900 p-4 text-sm text-zinc-300">
+                        No hay mensajes para este chat.
                     </p>
                 ) : (
                     <div className="space-y-2">
+                        {normalizedMessageSearch !== '' ? (
+                            <p className="text-center text-xs text-zinc-500">Buscá en los mensajes cargados.</p>
+                        ) : null}
                         {hasMoreMessages ? (
                             <div className="flex justify-center pb-2">
                                 <button
                                     type="button"
                                     onClick={loadOlderMessages}
                                     disabled={isLoadingOlder}
-                                    className="rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-medium text-gray-600 transition hover:border-green-600 hover:text-green-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="rounded-full border border-white/10 bg-zinc-900 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:border-green-500 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     {isLoadingOlder ? 'Cargando mensajes anteriores...' : 'Cargar mensajes anteriores'}
                                 </button>
                             </div>
                         ) : null}
                         {messages.map((message) => (
-                            <MessageBubble key={message.id} message={message} onOpenImage={setImagePreview} />
+                            <MessageBubble
+                                key={message.id}
+                                message={message}
+                                onOpenImage={setImagePreview}
+                                searchQuery={messageSearch}
+                                activeSearchMatch={searchMatches[activeMatchPosition] === message.id}
+                                refCallback={(element) => {
+                                    messageRefs.current[message.id] = element;
+                                }}
+                            />
                         ))}
                     </div>
                 )}
             </div>
 
-            <footer className="border-t border-gray-200 bg-white p-3">
+            <footer className="m-3 rounded-b-3xl rounded-t-3xl border border-white/10 bg-zinc-900 p-1">
                 <form onSubmit={submitMessage} className="space-y-2">
                     <input type="hidden" value={data.idempotency_key} readOnly />
                     <input
                         ref={fileInputRef}
                         type="file"
                         className="hidden"
-                        accept="image/*,video/*,audio/*,.pdf,.txt,.doc,.docx,.xls,.xlsx"
-                        onChange={(event) => setData('media', event.target.files?.[0] ?? null)}
+                        multiple
+                        onChange={(event) => handleFileInputChange(event.target.files)}
                     />
-                    {data.media ? (
-                        <div className="ml-14 flex w-fit max-w-[75%] items-center gap-2 rounded-full bg-gray-200 px-3 py-1 text-xs text-gray-900">
-                            <Paperclip className="size-3.5" />
-                            <span className="truncate">{data.media.name}</span>
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    setData('media', null);
-
-                                    if (fileInputRef.current) {
-                                        fileInputRef.current.value = '';
-                                    }
-                                }}
-                                className="rounded-full p-0.3 text-gray-900 transition hover:bg-white/10"
-                                aria-label="Quitar adjunto"
-                            >
-                                <X className="size-3.5" />
-                            </button>
+                    {data.media.length > 0 ? (
+                        <div className="ml-14 flex max-w-[75%] flex-wrap gap-2">
+                            {data.media.map((file, index) => (
+                                <div key={`${file.name}-${file.size}-${index}`} className="flex max-w-full items-center gap-2 rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-100">
+                                    <Paperclip className="size-3.5 shrink-0" />
+                                    <span className="truncate">{file.name}</span>
+                                    <span className="shrink-0 text-zinc-400">{formatBytes(file.size)}</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => removeFile(index)}
+                                        className="rounded-full p-0.3 text-zinc-100 transition hover:bg-white/10"
+                                        aria-label="Quitar adjunto"
+                                    >
+                                        <X className="size-3.5" />
+                                    </button>
+                                </div>
+                            ))}
                         </div>
                     ) : null}
                     <div className="flex items-end gap-2">
@@ -570,37 +760,33 @@ function MessagePanel({
                         >
                             <Paperclip className="size-4" />
                         </button>
-                        {/* <button
-                            type="button"
-                            className="grid size-11 shrink-0 place-items-center rounded-full text-gray-300 transition hover:bg-white/10 hover:text-white"
-                            aria-label="Emoji"
-                        >
-                            <Smile className="size-5" />
-                        </button> */}
                         <label className="sr-only" htmlFor="message-body">
                             Mensaje
                         </label>
-                        <textarea
-                            ref={textareaRef}
-                            id="message-body"
-                            value={data.body}
-                            onChange={(event) => setData('body', event.target.value)}
-                            onKeyDown={handleComposerKeyDown}
-                            rows={1}
-                            maxLength={4000}
-                            placeholder={data.media ? 'Agregá un comentario' : 'Escribí un mensaje'}
-                            className="max-h-36 min-h-10 flex-1 resize-none border-b border-transparent px-4 pt-4 pb-1.5 text-sm leading-5 text-black outline-none transition placeholder:text-gray-400 focus:border-b-[#06cf9c]"
-                        />
+                        <div className="flex min-h-10 flex-1 items-end rounded-2xl bg-zinc-900 px-2">
+                            <textarea
+                                ref={textareaRef}
+                                id="message-body"
+                                value={data.body}
+                                onChange={(event) => setData('body', event.target.value)}
+                                onKeyDown={handleComposerKeyDown}
+                                onPaste={handlePaste}
+                                rows={1}
+                                maxLength={4000}
+                                placeholder={data.media.length > 0 ? 'Agregá un comentario' : 'Escribí un mensaje'}
+                                className="max-h-36 min-h-10 flex-1 resize-none bg-zinc-900 px-2 pt-3 pb-1.5 text-sm leading-5 text-white outline-none transition placeholder:text-zinc-500"
+                            />
+                        </div>
                         <button
                             type="submit"
-                            disabled={processing || (data.body.trim() === '' && data.media === null)}
+                            disabled={processing || (data.body.trim() === '' && data.media.length === 0)}
                             className="grid size-10 shrink-0 place-items-center rounded-full bg-[#00a884] text-white transition hover:bg-[#06cf9c] disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label="Enviar mensaje"
                         >
                             <Send className="size-4" />
                         </button>
                     </div>
-                    {data.media && progress ? <p className="ml-14 text-xs text-gray-500">Subiendo archivo… {progress.percentage}%</p> : null}
+                    {data.media.length > 0 && progress ? <p className="ml-14 text-xs text-zinc-400">Subiendo archivos… {progress.percentage}%</p> : null}
                     {errors.body ? <p className="mt-2 text-sm text-red-600">{errors.body}</p> : null}
                     {errors.media ? <p className="mt-2 text-sm text-red-600">{errors.media}</p> : null}
                     {errors.idempotency_key ? <p className="mt-2 text-sm text-red-600">{errors.idempotency_key}</p> : null}
@@ -611,27 +797,231 @@ function MessagePanel({
     );
 }
 
-function MessageBubble({ message, onOpenImage }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void }) {
+function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, refCallback }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void; searchQuery: string; activeSearchMatch: boolean; refCallback: (element: HTMLElement | null) => void }) {
     const fromMe = message.direction === 'outbound';
     const timestamp = message.sent_at ?? message.received_at ?? message.created_at;
+    const [actionsOpen, setActionsOpen] = useState(false);
+    const [actionMode, setActionMode] = useState<'list' | 'edit' | 'delete'>('list');
+    const [editBody, setEditBody] = useState(message.body ?? '');
+    const [processingMutation, setProcessingMutation] = useState(false);
+    const deleted = message.deleted_at !== null;
+    const canShowMenu = !deleted && (message.can_edit || message.can_delete);
+
+    useEffect(() => {
+        if (actionMode !== 'edit') {
+            setEditBody(message.body ?? '');
+        }
+    }, [actionMode, message.body]);
+
+    const closeActions = () => {
+        setActionsOpen(false);
+        setActionMode('list');
+        setEditBody(message.body ?? '');
+    };
+
+    const submitEdit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        if (processingMutation || editBody.trim() === '') {
+            return;
+        }
+
+        setProcessingMutation(true);
+
+        router.patch(
+            `/whatsapp/messages/${message.id}`,
+            { body: editBody },
+            {
+                preserveScroll: true,
+                onSuccess: () => {
+                    closeActions();
+                },
+                onFinish: () => setProcessingMutation(false),
+            },
+        );
+    };
+
+    const deleteMessage = () => {
+        if (processingMutation) {
+            return;
+        }
+
+        setProcessingMutation(true);
+
+        router.delete(`/whatsapp/messages/${message.id}`, {
+            preserveScroll: true,
+            onSuccess: closeActions,
+            onFinish: () => setProcessingMutation(false),
+        });
+    };
 
     return (
         <article className={`flex ${fromMe ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[70%] rounded-xl border px-3 py-2 ${fromMe ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-white'}`}>
-                <MessageMedia message={message} onOpenImage={onOpenImage} />
-                {message.body ? (
-                    <p className="whitespace-pre-wrap text-sm leading-6 text-black">
-                        {message.body}
-                    </p>
-                ) : message.type === 'text' ? (
-                    <p className="whitespace-pre-wrap text-sm leading-6 text-black">Mensaje sin texto visible</p>
+            <div ref={refCallback} className={`group relative max-w-[70%] rounded-xl border px-3 py-2 shadow-sm transition ${ fromMe ? 'border-emerald-700/60 bg-emerald-800/70' : 'border-white/10 bg-zinc-900'}`}>
+                {canShowMenu ? (
+                    <div className="absolute top-1 right-1">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setActionsOpen(true);
+                                setActionMode('list');
+                            }}
+                            className="grid size-7 place-items-center rounded-full text-zinc-400 opacity-70 transition hover:bg-white/10 hover:text-white hover:opacity-100 group-hover:opacity-100"
+                            aria-label="Opciones del mensaje"
+                        >
+                            <MoreVertical className="size-4" />
+                        </button>
+                    </div>
                 ) : null}
-                <p className="mt-1 text-right text-[11px] text-gray-500">
+
+                {deleted ? (
+                    <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-zinc-400 italic">Mensaje eliminado</p>
+                ) : (
+                    <>
+                        <MessageMedia message={message} onOpenImage={onOpenImage} />
+                        {message.body ? (
+                            <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-white">
+                                {activeSearchMatch ? <HighlightedText text={message.body} query={searchQuery} /> : message.body}
+                            </p>
+                        ) : message.type === 'text' ? (
+                            <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-zinc-400 italic">Mensaje sin contenido</p>
+                        ) : null}
+                    </>
+                )}
+                <p className="mt-1 text-right text-[11px] text-zinc-400">
                     {formatWhatsAppTimestamp(timestamp)} · {translateStatus(message.status)}
+                    {message.edited_at && !deleted ? ' · Editado' : ''}
                 </p>
+                {message.status === 'failed' && message.error_message ? (
+                    <p className="mt-1 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1 text-xs leading-5 text-red-200">
+                        {message.error_message}
+                    </p>
+                ) : null}
+                {message.remote_edit_status === 'failed' && message.edit_error ? (
+                    <p className="mt-1 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1 text-xs leading-5 text-red-200">Edición fallida: {message.edit_error}</p>
+                ) : null}
+                {message.remote_delete_status === 'failed' && message.delete_error ? (
+                    <p className="mt-1 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1 text-xs leading-5 text-red-200">Eliminación fallida: {message.delete_error}</p>
+                ) : null}
+                {actionsOpen ? (
+                    <MessageActionsPanel
+                        message={message}
+                        mode={actionMode}
+                        editBody={editBody}
+                        processing={processingMutation}
+                        onModeChange={setActionMode}
+                        onEditBodyChange={setEditBody}
+                        onSubmitEdit={submitEdit}
+                        onDelete={deleteMessage}
+                        onClose={closeActions}
+                    />
+                ) : null}
             </div>
         </article>
     );
+}
+
+function MessageActionsPanel({
+    message,
+    mode,
+    editBody,
+    processing,
+    onModeChange,
+    onEditBodyChange,
+    onSubmitEdit,
+    onDelete,
+    onClose,
+}: {
+    message: MessageItem;
+    mode: 'list' | 'edit' | 'delete';
+    editBody: string;
+    processing: boolean;
+    onModeChange: (mode: 'list' | 'edit' | 'delete') => void;
+    onEditBodyChange: (value: string) => void;
+    onSubmitEdit: (event: FormEvent<HTMLFormElement>) => void;
+    onDelete: () => void;
+    onClose: () => void;
+}) {
+    return (
+        <div className="absolute right-1 bottom-[calc(100%+0.5rem)] z-20 w-60 max-w-[calc(100vw-2rem)]" role="dialog" aria-label="Opciones del mensaje">
+            <div className="rounded-2xl border border-white/10 bg-zinc-900 p-2 text-sm text-white shadow-2xl shadow-black/50">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="font-semibold pl-1">Opciones del mensaje</h3>
+                    <button type="button" onClick={onClose} className="grid size-8 place-items-center rounded-full text-zinc-400 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar opciones">
+                        <X className="size-4" />
+                    </button>
+                </div>
+
+                {mode === 'list' ? (
+                    <div className="space-y-1">
+                        {message.can_edit ? (
+                            <button type="button" onClick={() => onModeChange('edit')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-zinc-100 transition hover:bg-zinc-800">
+                                <Pencil className="size-3 text-emerald-300" />
+                                <span>Editar</span>
+                            </button>
+                        ) : null}
+                        {message.can_delete ? (
+                            <button type="button" onClick={() => onModeChange('delete')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-red-200 transition hover:bg-red-950/40">
+                                <Trash2 className="size-3" />
+                                <span>Eliminar</span>
+                            </button>
+                        ) : null}
+                    </div>
+                ) : null}
+
+                {mode === 'edit' ? (
+                    <form onSubmit={onSubmitEdit} className="space-y-3">
+                        <textarea
+                            value={editBody}
+                            onChange={(event) => onEditBodyChange(event.target.value)}
+                            maxLength={4000}
+                            rows={5}
+                            className="h-32 w-full resize-none rounded-xl border border-emerald-700/60 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-[#00a884]"
+                        />
+                        <div className="flex justify-end gap-2 text-xs font-semibold items-center">
+                            <p className="text-right text-xs text-zinc-500">{editBody.length}/2000</p>
+                            <button type="button" onClick={() => onModeChange('list')} className="rounded-full px-2 py-1 text-zinc-300 transition hover:bg-white/10">
+                                Cancelar
+                            </button>
+                            <button type="submit" disabled={processing || editBody.trim() === ''} className="rounded-full bg-[#00a884] px-2 py-1 text-white transition hover:bg-[#06cf9c] disabled:opacity-50">
+                                Guardar
+                            </button>
+                        </div>
+                    </form>
+                ) : null}
+
+                {mode === 'delete' ? (
+                    <div className="space-y-4 rounded-xl border border-red-500/30 bg-red-950/30 p-4">
+                        <p className="text-sm text-red-100">¿Eliminar este mensaje?</p>
+                        <div className="flex justify-end gap-2 text-xs font-semibold">
+                            <button type="button" onClick={() => onModeChange('list')} className="rounded-full px-2 py-1 text-zinc-300 transition hover:bg-white/10">
+                                Cancelar
+                            </button>
+                            <button type="button" onClick={onDelete} disabled={processing} className="rounded-full bg-red-600 px-2 py-1 text-white transition hover:bg-red-700 disabled:opacity-50">
+                                Eliminar
+                            </button>
+                        </div>
+                    </div>
+                ) : null}
+            </div>
+        </div>
+    );
+}
+
+function HighlightedText({ text, query }: { text: string; query: string }) {
+    const needle = query.trim();
+
+    if (needle === '') {
+        return text;
+    }
+
+    const parts = text.split(new RegExp(`(${escapeRegExp(needle)})`, 'gi'));
+
+    return parts.map((part, index) => part.toLocaleLowerCase() === needle.toLocaleLowerCase() ? (
+        <mark key={`${part}-${index}`} className="rounded bg-amber-300/30 px-0.5 text-amber-100">
+            {part}
+        </mark>
+    ) : part);
 }
 
 function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void }) {
@@ -640,10 +1030,14 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
     }
 
     if (!message.media_url) {
+        const status = message.media_download_status ? translateMediaStatus(message.media_download_status) : 'pendiente';
+        const mediaError = message.media_error ?? unavailableMediaLabel(message.type);
+
         return (
-            <p className="mb-1 rounded-lg bg-black/5 px-3 py-2 text-sm text-gray-700">
-                {mediaLabel(message.type)} {message.media_download_status ? `(${translateMediaStatus(message.media_download_status)})` : '(pendiente)'}
-            </p>
+            <div className="mb-1 rounded-lg bg-white/10 px-3 py-2 text-sm text-zinc-200">
+                <p>{mediaError ?? mediaLabel(message.type)}</p>
+                <p className="mt-0.5 text-xs text-zinc-400">Estado: {status}</p>
+            </div>
         );
     }
 
@@ -651,28 +1045,36 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
         return (
             <button
                 type="button"
-                onClick={() => onOpenImage({ url: message.media_url!, filename: message.media_filename ?? 'imagen-whatsapp' })}
+                onClick={() => onOpenImage({ url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
                 className="mb-2 block overflow-hidden rounded-lg text-left"
                 aria-label="Abrir imagen"
             >
-                <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} className="max-h-80 object-contain transition hover:brightness-95" loading="lazy" />
+                <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} className="max-h-80 object-contain transition hover:brightness-110" loading="lazy" />
             </button>
         );
     }
 
     if (message.type === 'video') {
-        return <video src={message.media_url} controls className="mb-2 max-h-80 rounded-lg" />;
+        return (
+            <video controls className="mb-2 max-h-80 rounded-lg">
+                <source src={message.media_url} type={message.media_mime_type ?? undefined} />
+            </video>
+        );
     }
 
     if (message.type === 'audio') {
-        return <audio src={message.media_url} controls className="mb-2 w-72 max-w-full" />;
+        return (
+            <audio controls className="mb-2 w-72 max-w-full">
+                <source src={message.media_url} type={message.media_mime_type ?? undefined} />
+            </audio>
+        );
     }
 
     return (
-        <a href={message.media_url} target="_blank" rel="noreferrer" className="mb-2 flex items-center gap-2 rounded-lg bg-black/5 px-3 py-2 text-sm font-medium text-gray-800 transition hover:bg-black/10">
+        <a href={message.media_url} target="_blank" rel="noreferrer" className="mb-2 flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-zinc-100 transition hover:bg-white/15">
             <Paperclip className="size-4" />
             <span className="truncate">{message.media_filename ?? 'Documento adjunto'}</span>
-            {message.media_size_bytes ? <span className="shrink-0 text-xs text-gray-500">{formatBytes(message.media_size_bytes)}</span> : null}
+            {message.media_size_bytes ? <span className="shrink-0 text-xs text-zinc-400">{formatBytes(message.media_size_bytes)}</span> : null}
         </a>
     );
 }
@@ -770,7 +1172,7 @@ function ImageViewerModal({ image, onClose }: { image: ImagePreview; onClose: ()
                     src={image.url}
                     alt={image.filename}
                     draggable={false}
-                    className="max-h-full max-w-full select-none object-contain transition-transform duration-75"
+                    className="max-h-full max-w-full select-none object-contain transition-transform duration-75 p-4"
                     style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})` }}
                 />
             </div>
@@ -780,10 +1182,9 @@ function ImageViewerModal({ image, onClose }: { image: ImagePreview; onClose: ()
 
 function EmptyConversation() {
     return (
-        <div className="grid h-full place-items-center bg-gray-50 p-8 text-center">
-            <div className="max-w-md rounded-2xl border border-gray-200 bg-white p-8">
-                <h2 className="text-xl font-semibold text-black">Seleccioná una conversación</h2>
-                <p className="mt-3 text-sm leading-6 text-gray-600">
+        <div className="grid h-full place-items-center bg-black p-8 text-center">
+            <div className="max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-8">
+                <p className="text-sm leading-6 text-zinc-200">
                     Elegí un chat para ver los mensajes.
                 </p>
             </div>
@@ -797,6 +1198,7 @@ function SearchForm({
     onChange,
     onSubmit,
     onClear,
+    actions,
     className = '',
 }: {
     placeholder: string;
@@ -804,6 +1206,7 @@ function SearchForm({
     onChange: (value: string) => void;
     onSubmit: () => void;
     onClear: () => void;
+    actions?: ReactNode;
     className?: string;
 }) {
     return (
@@ -812,21 +1215,22 @@ function SearchForm({
                 event.preventDefault();
                 onSubmit();
             }}
-            className={`flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 ${className}`}
+            className={`flex items-center gap-2 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 ${className}`}
         >
-            <Search className="size-4 text-gray-400" />
+            <Search className="size-4 text-zinc-500" />
             <input
                 type="search"
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
                 placeholder={placeholder}
-                className="w-full bg-transparent text-sm text-black outline-none placeholder:text-gray-400"
+                className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-500"
             />
             {value.trim() !== '' ? (
-                <button type="button" onClick={onClear} className="text-xs font-medium text-gray-500 transition hover:text-green-700">
+                <button type="button" onClick={onClear} className="text-xs font-medium text-zinc-400 transition hover:text-green-300">
                     Limpiar
                 </button>
             ) : null}
+            {actions}
         </form>
     );
 }
@@ -844,10 +1248,6 @@ function conversationHref(chatId: string, filters: Props['filters']): string {
 
     if (filters.chat_search !== '') {
         query.set('chat_search', filters.chat_search);
-    }
-
-    if (filters.message_search !== '') {
-        query.set('message_search', filters.message_search);
     }
 
     return `/whatsapp/conversations?${query.toString()}`;
@@ -910,11 +1310,15 @@ function mediaLabel(type: string): string {
     return labels[type] ?? 'Archivo';
 }
 
+function unavailableMediaLabel(type: string): string {
+    return type === 'audio' ? 'Audio no disponible' : 'Archivo no disponible';
+}
+
 function translateMediaStatus(status: string): string {
     const statuses: Record<string, string> = {
         stored: 'guardado',
         pending: 'pendiente',
-        omitted: 'omitido por OpenWA',
+        omitted: 'omitido',
         failed: 'falló la descarga',
     };
 
@@ -931,6 +1335,14 @@ function formatBytes(bytes: number): string {
     }
 
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function csrfToken(): string {
+    return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '';
 }
 
 function translateStatus(status: string): string {

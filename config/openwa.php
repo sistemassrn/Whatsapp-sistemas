@@ -10,4 +10,18 @@ return [
     'session_name' => env('OPENWA_SESSION_NAME', 'whatsapp-sistemas'),
 
     'timeout' => (int) env('OPENWA_TIMEOUT', 5),
+
+    'media_timeout' => (int) env('OPENWA_MEDIA_TIMEOUT', env('OPENWA_TIMEOUT', 30)),
+
+    'sync_recent' => [
+        'enabled' => (bool) env('WHATSAPP_SYNC_RECENT_ENABLED', false),
+        'limit_chats' => (int) env('WHATSAPP_SYNC_RECENT_LIMIT_CHATS', 20),
+        'limit_messages' => (int) env('WHATSAPP_SYNC_RECENT_LIMIT_MESSAGES', 20),
+    ],
+
+    'retry_media' => [
+        'enabled' => (bool) env('WHATSAPP_RETRY_MEDIA_ENABLED', false),
+        'limit' => (int) env('WHATSAPP_RETRY_MEDIA_LIMIT', 50),
+        'minutes' => (int) env('WHATSAPP_RETRY_MEDIA_MINUTES', 1440),
+    ],
 ];

@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Services\OpenWaClient;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Http;
 use Inertia\Testing\AssertableInertia as Assert;
 
 beforeEach(function () {
@@ -101,11 +102,41 @@ it('redirects conversations to connect when OpenWA is unavailable', function () 
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->component('whatsapp/connect')
-            ->where('openwa.error', 'No se pudo conectar con OpenWA. Revisá que el servicio esté levantado y que OPENWA_BASE_URL apunte a /api.'),
+            ->where('openwa.status', 'error')
+            ->where('openwa.isReady', false)
+            ->where('openwa.canStart', true)
+            ->where('openwa.error', 'No pudimos conectar. Reintentá en unos segundos.'),
         );
 });
 
-it('filters messages for the selected conversation by message search', function () {
+it('cleans raw chat identifiers for conversation display names', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491177777777@c.us',
+        'phone' => '5491177777777',
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491177777777@lid',
+        'contact_id' => $contact->id,
+        'title' => '5491177777777@lid',
+        'last_message_at' => now(),
+    ]);
+
+    $this->get(route('whatsapp.conversations'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->where('conversations.0.external_id', $conversation->external_id)
+            ->where('conversations.0.title', '5491177777777')
+        );
+});
+
+it('does not filter loaded messages by message search anymore', function () {
     $this->withoutMiddleware(Authenticate::class);
     $this->withoutVite();
 
@@ -140,11 +171,105 @@ it('filters messages for the selected conversation by message search', function 
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->component('whatsapp/conversations')
-            ->where('filters.message_search', 'factura')
+            ->where('filters.message_search', '')
             ->where('selectedChatId', $conversation->external_id)
-            ->has('messages', 1)
-            ->where('messages.0.body', 'Necesito una factura de septiembre'),
+            ->has('messages', 2)
+            ->where('messages.0.body', 'Necesito una factura de septiembre')
+            ->where('messages.1.body', 'Solo saludo sin palabra clave'),
         );
+});
+
+it('returns a fresh cached contact avatar without calling OpenWA', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+        'profile_photo_url' => 'https://cdn.example/avatar.jpg',
+        'profile_photo_fetched_at' => now(),
+    ]);
+
+    $client = Mockery::mock(OpenWaClient::class);
+    $client->shouldNotReceive('health');
+    $client->shouldNotReceive('findSessionByName');
+    $client->shouldNotReceive('contactProfilePicture');
+
+    $this->instance(OpenWaClient::class, $client);
+
+    $this->postJson(route('whatsapp.contacts.avatar', $contact))
+        ->assertOk()
+        ->assertJson([
+            'avatar_url' => 'https://cdn.example/avatar.jpg',
+        ]);
+});
+
+it('fetches and caches a stale contact avatar on demand', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+        'profile_photo_fetched_at' => now()->subDays(2),
+    ]);
+
+    $client = Mockery::mock(OpenWaClient::class);
+    $client->shouldReceive('health')->once()->andReturn(['status' => 'ok']);
+    $client->shouldReceive('findSessionByName')->once()->andReturn([
+        'id' => 'session-1',
+        'status' => 'ready',
+    ]);
+    $client->shouldReceive('contactProfilePicture')
+        ->once()
+        ->with('session-1', $contact->external_id)
+        ->andReturn('https://cdn.example/fresh-avatar.jpg');
+
+    $this->instance(OpenWaClient::class, $client);
+
+    $this->postJson(route('whatsapp.contacts.avatar', $contact))
+        ->assertOk()
+        ->assertJson([
+            'avatar_url' => 'https://cdn.example/fresh-avatar.jpg',
+        ]);
+
+    $contact->refresh();
+
+    expect($contact->profile_photo_url)->toBe('https://cdn.example/fresh-avatar.jpg')
+        ->and($contact->profile_photo_fetched_at)->not->toBeNull()
+        ->and($contact->profile_photo_error)->toBeNull();
+});
+
+it('fetches and caches contact avatar from the OpenWA profile picture endpoint', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/health' => Http::response(['status' => 'ok']),
+        'openwa.test/api/sessions/session-1/contacts/5491111111111%40c.us/profile-picture' => Http::response([
+            'url' => 'https://pps.example/avatar.jpg',
+        ]),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+    ]);
+
+    $this->postJson(route('whatsapp.contacts.avatar', $contact))
+        ->assertOk()
+        ->assertJson([
+            'avatar_url' => 'https://pps.example/avatar.jpg',
+        ]);
+
+    $contact->refresh();
+
+    expect($contact->profile_photo_url)->toBe('https://pps.example/avatar.jpg')
+        ->and($contact->profile_photo_fetched_at)->not->toBeNull();
 });
 
 it('uses the newest message as conversation preview when cached last message is stale or missing', function () {

@@ -14,6 +14,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use League\Flysystem\UnableToReadFile;
 
 class ConversationMessageController extends Controller
 {
@@ -21,50 +22,72 @@ class ConversationMessageController extends Controller
     {
         /** @var array{body?: string|null, idempotency_key: string, ptt?: bool, voice?: bool} $validated */
         $validated = $request->validated();
-        $uploadedMedia = $request->file('media');
+        $uploadedMediaFiles = $request->mediaFiles();
         $body = trim((string) ($validated['body'] ?? ''));
-        $messageType = $uploadedMedia instanceof UploadedFile ? $this->messageTypeForMime($uploadedMedia->getMimeType() ?: 'application/octet-stream') : 'text';
+        $isMediaSend = count($uploadedMediaFiles) > 0;
+        $messages = [];
 
-        $existingMessage = Message::query()
-            ->where('idempotency_key', $validated['idempotency_key'])
-            ->first();
+        if (! $isMediaSend && $body === '') {
+            return $this->redirectToConversation($conversation)
+                ->with('error', 'Escribí un mensaje o adjuntá un archivo.');
+        }
 
-        if ($existingMessage !== null) {
+        $messageInputs = $isMediaSend
+            ? $this->mediaMessageInputs($uploadedMediaFiles, $body, $validated['idempotency_key'])
+            : [[
+                'body' => $body,
+                'idempotency_key' => $validated['idempotency_key'],
+                'media' => null,
+                'type' => 'text',
+            ]];
+
+        $now = now();
+
+        foreach ($messageInputs as $messageInput) {
+            $existingMessage = Message::query()
+                ->where('idempotency_key', $messageInput['idempotency_key'])
+                ->first();
+
+            if ($existingMessage !== null) {
+                continue;
+            }
+
+            try {
+                $message = Message::query()->create([
+                    'conversation_id' => $conversation->id,
+                    'direction' => 'outbound',
+                    'body' => $messageInput['body'] !== '' ? $messageInput['body'] : null,
+                    'type' => $messageInput['type'],
+                    'status' => 'pending',
+                    'idempotency_key' => $messageInput['idempotency_key'],
+                    'sent_at' => $now,
+                ]);
+            } catch (QueryException $exception) {
+                $duplicateMessage = Message::query()
+                    ->where('idempotency_key', $messageInput['idempotency_key'])
+                    ->first();
+
+                if ($duplicateMessage !== null) {
+                    continue;
+                }
+
+                throw $exception;
+            }
+
+            if ($messageInput['media'] instanceof UploadedFile) {
+                $this->storeOutboundMedia($message, $messageInput['media']);
+            }
+
+            $messages[] = $message;
+        }
+
+        if ($messages === []) {
             return $this->redirectToConversation($conversation)
                 ->with('success', 'El mensaje ya había sido registrado.');
         }
 
-        $now = now();
-
-        try {
-            $message = Message::query()->create([
-                'conversation_id' => $conversation->id,
-                'direction' => 'outbound',
-                'body' => $body !== '' ? $body : null,
-                'type' => $messageType,
-                'status' => 'pending',
-                'idempotency_key' => $validated['idempotency_key'],
-                'sent_at' => $now,
-            ]);
-        } catch (QueryException $exception) {
-            $duplicateMessage = Message::query()
-                ->where('idempotency_key', $validated['idempotency_key'])
-                ->first();
-
-            if ($duplicateMessage !== null) {
-                return $this->redirectToConversation($conversation)
-                    ->with('success', 'El mensaje ya había sido registrado.');
-            }
-
-            throw $exception;
-        }
-
-        if ($uploadedMedia instanceof UploadedFile) {
-            $this->storeOutboundMedia($message, $uploadedMedia);
-        }
-
         $conversation->update([
-            'last_message_id' => $message->id,
+            'last_message_id' => end($messages)->id,
             'last_message_at' => $now,
         ]);
 
@@ -72,47 +95,55 @@ class ConversationMessageController extends Controller
             $session = $client->findSessionByName((string) config('openwa.session_name'));
 
             if ($session === null) {
-                $this->markMessageAsFailed($message, 'No se encontró la sesión configurada de OpenWA.');
+                $this->markMessagesAsFailed($messages, 'Conectá WhatsApp para enviar mensajes.');
 
                 return $this->redirectToConversation($conversation)
-                    ->with('error', 'No se encontró la sesión configurada de OpenWA.');
+                    ->with('error', 'Conectá WhatsApp para enviar mensajes.');
             }
 
             $sessionId = $this->sessionId($session);
 
             if ($sessionId === null) {
-                $this->markMessageAsFailed($message, 'OpenWA no informó un identificador válido para la sesión.');
+                $this->markMessagesAsFailed($messages, 'No pudimos enviar el mensaje. Reintentá en unos segundos.');
 
                 return $this->redirectToConversation($conversation)
-                    ->with('error', 'OpenWA no informó un identificador válido para la sesión.');
+                    ->with('error', 'No pudimos enviar el mensaje. Reintentá en unos segundos.');
             }
 
             if (! $this->isReady($session)) {
-                $this->markMessageAsFailed($message, 'La sesión de OpenWA no está lista para enviar mensajes.');
+                $this->markMessagesAsFailed($messages, 'Conectá WhatsApp para enviar mensajes.');
 
                 return $this->redirectToConversation($conversation)
-                    ->with('error', 'La sesión de OpenWA no está lista para enviar mensajes.');
+                    ->with('error', 'Conectá WhatsApp para enviar mensajes.');
             }
 
-            $response = $uploadedMedia instanceof UploadedFile
-                ? $this->sendMediaMessage($client, $sessionId, $conversation->external_id, $message, (bool) ($validated['ptt'] ?? $validated['voice'] ?? false))
-                : $client->sendTextMessage($sessionId, $conversation->external_id, $body);
-            $message->status = 'accepted';
+            foreach ($messages as $message) {
+                $response = $message->media_path !== null
+                    ? $this->sendMediaMessage($client, $sessionId, $conversation->external_id, $message, (bool) ($validated['ptt'] ?? $validated['voice'] ?? false))
+                    : $client->sendTextMessage($sessionId, $conversation->external_id, $message->body ?? '');
+                $message->status = 'accepted';
 
-            $externalId = $this->messageExternalId($response);
+                $externalId = $this->messageExternalId($response);
 
-            if ($message->external_id === null && $externalId !== null) {
-                $message->external_id = $externalId;
+                if ($message->external_id === null && $externalId !== null) {
+                    $message->external_id = $externalId;
+                }
+
+                $message->error_message = null;
+                $message->save();
             }
-
-            $message->error_message = null;
-            $message->save();
 
             return $this->redirectToConversation($conversation)
-                ->with('success', 'Mensaje enviado a OpenWA.');
+                ->with('success', 'Mensaje enviado.');
+        } catch (UnableToReadFile|\RuntimeException $exception) {
+            $error = $this->safeMediaSendError($exception);
+            $this->markPendingMessagesAsFailed($messages, $error);
+
+            return $this->redirectToConversation($conversation)
+                ->with('error', $error);
         } catch (ConnectionException|RequestException $exception) {
-            $error = $this->readableOpenWaError($exception);
-            $this->markMessageAsFailed($message, $error);
+            $error = $this->readableSendError($exception);
+            $this->markPendingMessagesAsFailed($messages, $error);
 
             return $this->redirectToConversation($conversation)
                 ->with('error', $error);
@@ -132,6 +163,48 @@ class ConversationMessageController extends Controller
             'status' => 'failed',
             'error_message' => $error,
         ]);
+    }
+
+    /**
+     * @param  list<Message>  $messages
+     */
+    private function markMessagesAsFailed(array $messages, string $error): void
+    {
+        foreach ($messages as $message) {
+            $this->markMessageAsFailed($message, $error);
+        }
+    }
+
+    /**
+     * @param  list<Message>  $messages
+     */
+    private function markPendingMessagesAsFailed(array $messages, string $error): void
+    {
+        foreach ($messages as $message) {
+            if ($message->status === 'pending') {
+                $this->markMessageAsFailed($message, $error);
+            }
+        }
+    }
+
+    /**
+     * @param  list<UploadedFile>  $uploadedMediaFiles
+     * @return list<array{body: string, idempotency_key: string, media: UploadedFile, type: string}>
+     */
+    private function mediaMessageInputs(array $uploadedMediaFiles, string $body, string $baseIdempotencyKey): array
+    {
+        $multiple = count($uploadedMediaFiles) > 1;
+
+        return array_map(function (UploadedFile $uploadedMedia, int $index) use ($body, $baseIdempotencyKey, $multiple): array {
+            $mimeType = $uploadedMedia->getMimeType() ?: 'application/octet-stream';
+
+            return [
+                'body' => $index === 0 ? $body : '',
+                'idempotency_key' => $multiple ? "{$baseIdempotencyKey}-".($index + 1) : $baseIdempotencyKey,
+                'media' => $uploadedMedia,
+                'type' => $this->messageTypeForMime($mimeType),
+            ];
+        }, $uploadedMediaFiles, array_keys($uploadedMediaFiles));
     }
 
     private function storeOutboundMedia(Message $message, UploadedFile $uploadedMedia): void
@@ -159,7 +232,11 @@ class ConversationMessageController extends Controller
     private function sendMediaMessage(OpenWaClient $client, string $sessionId, string $chatId, Message $message, bool $ptt): array
     {
         if ($message->media_path === null || $message->media_mime_type === null) {
-            throw new \RuntimeException('El mensaje no tiene media almacenada para enviar.');
+            throw new \RuntimeException('El mensaje no tiene un archivo almacenado para enviar.');
+        }
+
+        if ($message->media_disk !== 'whatsapp_media' || ! Storage::disk('whatsapp_media')->exists($message->media_path)) {
+            throw new \RuntimeException('El archivo adjunto ya no está disponible en el almacenamiento.');
         }
 
         $base64 = base64_encode(Storage::disk('whatsapp_media')->get($message->media_path));
@@ -201,20 +278,30 @@ class ConversationMessageController extends Controller
 
     private function extensionForMime(string $mimeType, ?string $fallback = null): string
     {
-        return match ($mimeType) {
+        $baseMimeType = $this->baseMimeType($mimeType);
+
+        return match ($baseMimeType) {
             'image/jpeg' => 'jpg',
             'image/png' => 'png',
             'image/gif' => 'gif',
             'image/webp' => 'webp',
+            'image/bmp' => 'bmp',
             'video/mp4' => 'mp4',
             'audio/mpeg' => 'mp3',
             'audio/mp4' => 'm4a',
             'audio/ogg' => 'ogg',
             'audio/webm' => 'webm',
+            'audio/wav', 'audio/x-wav' => 'wav',
             'application/pdf' => 'pdf',
+            'application/sql' => 'sql',
             'text/plain' => 'txt',
             default => $fallback ?: 'bin',
         };
+    }
+
+    private function baseMimeType(string $mimeType): string
+    {
+        return strtolower(trim(Str::before($mimeType, ';')));
     }
 
     /**
@@ -277,19 +364,62 @@ class ConversationMessageController extends Controller
         return is_string($externalId) && $externalId !== '' ? $externalId : null;
     }
 
-    private function readableOpenWaError(ConnectionException|RequestException $exception): string
+    private function readableSendError(ConnectionException|RequestException $exception): string
     {
         if ($exception instanceof ConnectionException) {
-            return 'No se pudo conectar con OpenWA. Revisá que el servicio esté levantado y que OPENWA_BASE_URL apunte a /api.';
+            return 'No pudimos enviar el mensaje. Reintentá en unos segundos.';
         }
 
         $status = $exception->response->status();
-        $message = $exception->response->json('message');
 
-        if (is_string($message) && $message !== '') {
-            return "OpenWA respondió con error HTTP {$status}: {$message}";
+        if ($status === 401 || $status === 403) {
+            return 'No pudimos enviar el mensaje. Reintentá en unos segundos.';
         }
 
-        return "OpenWA respondió con error HTTP {$status}. Revisá OPENWA_API_KEY, OPENWA_BASE_URL y el estado del servicio.";
+        if ($status === 404) {
+            return 'Conectá WhatsApp para enviar mensajes.';
+        }
+
+        if ($status === 422) {
+            return 'Revisá el destinatario, el texto o el adjunto.';
+        }
+
+        return 'No pudimos enviar el mensaje. Reintentá en unos segundos.';
+    }
+
+    private function safeMediaSendError(UnableToReadFile|\RuntimeException $exception): string
+    {
+        $message = $exception->getMessage();
+
+        if (str_contains($message, 'almacenado') || str_contains($message, 'disponible')) {
+            return $message;
+        }
+
+        return 'No se pudo leer el archivo adjunto para enviarlo. Volvé a adjuntarlo e intentá de nuevo.';
+    }
+
+    private function safeResponseMessage(RequestException $exception): ?string
+    {
+        $message = $exception->response->json('message');
+
+        if (! is_string($message) || trim($message) === '') {
+            $errors = $exception->response->json('errors');
+
+            if (is_array($errors)) {
+                $firstError = Arr::first(Arr::flatten($errors));
+
+                $message = is_string($firstError) ? $firstError : null;
+            }
+        }
+
+        if (! is_string($message) || trim($message) === '') {
+            return null;
+        }
+
+        return Str::of($message)
+            ->replaceMatches('/(x-api-key|api[_-]?key|authorization|bearer)\s*[:=]\s*\S+/i', '$1=[oculto]')
+            ->replaceMatches('/[A-Za-z]:\\\\[^\s]+|\/[^\s]+/', '[ruta oculta]')
+            ->limit(180, '…')
+            ->toString();
     }
 }

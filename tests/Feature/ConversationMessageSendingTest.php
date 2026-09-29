@@ -87,7 +87,7 @@ it('stores an outbound media message and sends base64 to OpenWA', function () {
     $response = $this
         ->post(route('whatsapp.conversations.messages.store', $conversation), [
             'body' => 'Mirá esta foto',
-            'media' => $file,
+            'media' => [$file],
             'idempotency_key' => 'send-media-key-1',
         ]);
 
@@ -110,6 +110,153 @@ it('stores an outbound media message and sends base64 to OpenWA', function () {
         && $request['caption'] === 'Mirá esta foto'
         && is_string($request['base64'])
         && $request['base64'] !== '');
+});
+
+it('rejects unsupported outbound media with a Spanish validation error', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $file = UploadedFile::fake()->create('malware.exe', 1, 'application/x-msdownload');
+
+    $response = $this
+        ->from(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'media' => [$file],
+            'idempotency_key' => 'send-invalid-media-key-1',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+    $response->assertSessionHasErrors([
+        'media.0' => 'Tipo de archivo no permitido.',
+    ]);
+
+    expect(Message::query()->count())->toBe(0);
+});
+
+it('sends up to three media files as separate messages with derived idempotency keys', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    Storage::fake('whatsapp_media');
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/sessions/session-1/messages/send-document' => Http::sequence()
+            ->push(['messageId' => 'openwa-doc-1'])
+            ->push(['messageId' => 'openwa-doc-2'])
+            ->push(['messageId' => 'openwa-doc-3']),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $response = $this
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'body' => 'Adjuntos',
+            'media' => [
+                UploadedFile::fake()->create('consulta.sql', 1, 'text/plain'),
+                UploadedFile::fake()->create('notas.rs', 1, 'text/plain'),
+                UploadedFile::fake()->create('datos.int', 1, 'application/octet-stream'),
+            ],
+            'idempotency_key' => 'send-files-key',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+
+    $messages = Message::query()->orderBy('id')->get();
+
+    expect($messages)->toHaveCount(3)
+        ->and($messages[0]->body)->toBe('Adjuntos')
+        ->and($messages[1]->body)->toBeNull()
+        ->and($messages[2]->body)->toBeNull()
+        ->and($messages->pluck('idempotency_key')->all())->toBe([
+            'send-files-key-1',
+            'send-files-key-2',
+            'send-files-key-3',
+        ])
+        ->and($messages->pluck('status')->all())->toBe(['accepted', 'accepted', 'accepted']);
+
+    Http::assertSentCount(4);
+});
+
+it('rejects more than three media files', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $response = $this
+        ->from(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'media' => [
+                UploadedFile::fake()->create('a.txt', 1, 'text/plain'),
+                UploadedFile::fake()->create('b.txt', 1, 'text/plain'),
+                UploadedFile::fake()->create('c.txt', 1, 'text/plain'),
+                UploadedFile::fake()->create('d.txt', 1, 'text/plain'),
+            ],
+            'idempotency_key' => 'send-too-many-key',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+    $response->assertSessionHasErrors([
+        'media' => 'Podés enviar hasta 3 archivos por vez.',
+    ]);
+
+    expect(Message::query()->count())->toBe(0);
+});
+
+it('marks outbound messages as failed when OpenWA rejects the send', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/sessions/session-1/messages/send-text' => Http::response([
+            'message' => 'chatId es obligatorio',
+        ], 422),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $response = $this
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'body' => 'Hola desde Laravel',
+            'idempotency_key' => 'send-openwa-error-key-1',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+    $response->assertSessionHas('error', 'Revisá el destinatario, el texto o el adjunto.');
+
+    $message = Message::query()->firstOrFail();
+
+    expect($message->status)->toBe('failed')
+        ->and($message->error_message)->toBe('Revisá el destinatario, el texto o el adjunto.');
 });
 
 it('does not duplicate messages for the same idempotency key', function () {

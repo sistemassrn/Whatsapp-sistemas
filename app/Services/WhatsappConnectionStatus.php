@@ -17,7 +17,13 @@ class WhatsappConnectionStatus
      *     health: array<string, mixed>|null,
      *     session: array<string, mixed>|null,
      *     qrCode: array<string, mixed>|null,
+     *     status: string,
+     *     isReady: bool,
+     *     isStarted: bool,
+     *     canStart: bool,
      *     started: bool,
+     *     autoStarted: bool,
+     *     lastCheckedAt: string,
      *     error: string|null
      * }
      */
@@ -31,6 +37,7 @@ class WhatsappConnectionStatus
         $qrCode = null;
         $started = false;
         $error = null;
+        $lastCheckedAt = now()->toIso8601String();
 
         if (! $configured) {
             return [
@@ -40,7 +47,13 @@ class WhatsappConnectionStatus
                 'health' => null,
                 'session' => null,
                 'qrCode' => null,
+                'status' => 'not_configured',
+                'isReady' => false,
+                'isStarted' => false,
+                'canStart' => false,
                 'started' => false,
+                'autoStarted' => false,
+                'lastCheckedAt' => $lastCheckedAt,
                 'error' => null,
             ];
         }
@@ -69,14 +82,24 @@ class WhatsappConnectionStatus
             $error = $this->readableOpenWaError($exception);
         }
 
+        $status = is_array($session) ? $this->sessionStatus($session) : null;
+        $isReady = is_array($session) && $this->isReady($session);
+        $isStarted = is_array($session) && $this->isStarted($session);
+
         return [
             'configured' => $configured,
             'baseUrl' => $baseUrl,
             'sessionName' => $sessionName,
-            'health' => $health,
-            'session' => $session,
+            'health' => $this->safeHealth($health),
+            'session' => $this->safeSession($session),
             'qrCode' => $qrCode,
+            'status' => $status ?? ($error === null ? 'disconnected' : 'error'),
+            'isReady' => $isReady,
+            'isStarted' => $isStarted,
+            'canStart' => $configured && ! $isReady && ! $isStarted,
             'started' => $started,
+            'autoStarted' => $started,
+            'lastCheckedAt' => $lastCheckedAt,
             'error' => $error,
         ];
     }
@@ -193,12 +216,10 @@ class WhatsappConnectionStatus
     public function readableOpenWaError(ConnectionException|RequestException $exception): string
     {
         if ($exception instanceof ConnectionException) {
-            return 'No se pudo conectar con OpenWA. Revisá que el servicio esté levantado y que OPENWA_BASE_URL apunte a /api.';
+            return 'No pudimos conectar. Reintentá en unos segundos.';
         }
 
-        $status = $exception->response->status();
-
-        return "OpenWA respondió con error HTTP {$status}. Revisá OPENWA_API_KEY, OPENWA_BASE_URL y el estado del servicio.";
+        return 'No pudimos conectar. Reintentá en unos segundos.';
     }
 
     private function isConfigured(string $baseUrl, string $sessionName): bool
@@ -248,6 +269,62 @@ class WhatsappConnectionStatus
                 $nestedSession = $session[$key];
 
                 return $this->sessionEngineLoaded($nestedSession);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $health
+     * @return array<string, mixed>|null
+     */
+    private function safeHealth(?array $health): ?array
+    {
+        if ($health === null) {
+            return null;
+        }
+
+        return [
+            'status' => is_string($health['status'] ?? null) ? $health['status'] : null,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $session
+     * @return array<string, mixed>|null
+     */
+    private function safeSession(?array $session): ?array
+    {
+        if ($session === null) {
+            return null;
+        }
+
+        return [
+            'id' => $this->sessionId($session),
+            'name' => $this->sessionName($session),
+            'status' => $this->sessionStatus($session),
+            'engineLoaded' => $this->sessionEngineLoaded($session),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $session
+     */
+    private function sessionName(array $session): ?string
+    {
+        $name = $session['name'] ?? null;
+
+        if (is_string($name) && $name !== '') {
+            return $name;
+        }
+
+        foreach (['data', 'session'] as $key) {
+            if (isset($session[$key]) && is_array($session[$key])) {
+                /** @var array<string, mixed> $nestedSession */
+                $nestedSession = $session[$key];
+
+                return $this->sessionName($nestedSession);
             }
         }
 

@@ -1,0 +1,40 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    /**
+     * Run the migrations.
+     */
+    public function up(): void
+    {
+        Schema::table('messages', function (Blueprint $table): void {
+            $table->timestamp('edited_at')->nullable();
+            $table->timestamp('deleted_at')->nullable();
+            $table->string('remote_edit_status')->nullable();
+            $table->string('remote_delete_status')->nullable();
+            $table->text('edit_error')->nullable();
+            $table->text('delete_error')->nullable();
+        });
+    }
+
+    /**
+     * Reverse the migrations.
+     */
+    public function down(): void
+    {
+        Schema::table('messages', function (Blueprint $table): void {
+            $table->dropColumn([
+                'edited_at',
+                'deleted_at',
+                'remote_edit_status',
+                'remote_delete_status',
+                'edit_error',
+                'delete_error',
+            ]);
+        });
+    }
+};

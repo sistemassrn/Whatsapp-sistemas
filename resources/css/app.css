@@ -20,12 +20,12 @@
 
 @layer base {
     body {
-        @apply bg-white font-sans text-zinc-950 antialiased;
+        @apply bg-black font-sans text-zinc-100 antialiased;
     }
 
     * {
         scrollbar-width: thin;
-        scrollbar-color: rgb(161 161 170 / 45%) transparent;
+        scrollbar-color: rgb(113 113 122 / 55%) transparent;
     }
 
     /* Oculta los botones de arriba y abajo (las flechas) */
@@ -46,10 +46,10 @@
 
     *::-webkit-scrollbar-thumb {
         border-radius: 999px;
-        background: rgb(161 161 170 / 35%);
+        background: rgb(113 113 122 / 45%);
     }
 
     *::-webkit-scrollbar-thumb:hover {
-        background: rgb(113 113 122 / 50%);
+        background: rgb(161 161 170 / 60%);
     }
 }
