@@ -1,3 +1,4 @@
+import { ThemeToggle } from "@/theme";
 import { Head, router, useForm } from "@inertiajs/react";
 import { useEffect } from "react";
 import type { FormEvent } from "react";
@@ -109,7 +110,8 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
             <Head title="Escanear QR" />
 
             <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-6 py-12 text-white">
-                <section className="mx-auto w-full max-w-5xl rounded-3xl border border-white/10 bg-zinc-900 p-6 shadow-2xl shadow-black/50 sm:p-8">
+                <ThemeToggle className="absolute top-5 right-5" />
+                <section className="mx-auto w-full max-w-5xl rounded-3xl border border-white/10 bg-zinc-900 p-6 sm:p-8">
                     <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
                         <div className="flex min-h-full flex-col">
                             <dl className="grid gap-4 rounded-2xl border border-white/10 bg-zinc-900 p-5 sm:grid-cols-2">
@@ -133,7 +135,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                 />
                             </dl>
 
-                            <div className="mt-6 rounded-2xl border border-white/10 bg-zinc-900/70 p-5 text-sm leading-6 text-zinc-300">
+                            <div className="mt-6 rounded-2xl border border-white/10 bg-zinc-900/70 p-5 text-sm leading-6 text-zinc-200">
                                 <p>
                                     Escaneá el código cuando aparezca. Si no aparece, apretá en "Cerrar WhatsApp" e intentá de nuevo en unos segundos.
                                 </p>
@@ -165,7 +167,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                             disabled={disconnectForm.processing}
                                             className="w-full rounded-xl border border-red-500 px-4 py-3 text-sm font-semibold text-red-300 transition hover:border-red-600 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                                         >
-                                            Cerrar WhatsApp
+                                            Cerrar sesión
                                         </button>
                                     </form>
                                 )}
@@ -222,7 +224,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
 function Status({ label, value }: { label: string; value: string | number; }) {
     return (
         <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            <dt className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
                 {label}
             </dt>
             <dd className="mt-1 wrap-break-word font-medium text-white">

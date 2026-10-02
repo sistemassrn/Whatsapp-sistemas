@@ -31,8 +31,9 @@ class OpenWaMessageWebhookController extends Controller
         $messagePayload = $importer->messagePayload($payload);
         $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
         $chatExternalId = $this->chatExternalId($messagePayload, $fromMe);
+        $messageExternalId = $importer->messageExternalId($messagePayload);
 
-        if ($chatExternalId === null) {
+        if ($chatExternalId === null && $messageExternalId === null) {
             Log::warning('WhatsApp webhook ignored because chat id is missing.', [
                 'payload_keys' => array_keys($messagePayload),
             ]);
@@ -40,16 +41,10 @@ class OpenWaMessageWebhookController extends Controller
             return response()->json(['message' => 'Missing chat id'], 422);
         }
 
-        $messageExternalId = $this->firstString($messagePayload, ['id', 'messageId', '_data.id.id', '_data.id._serialized']);
-
         if ($messageExternalId === null) {
             Log::warning('WhatsApp webhook received without message id.', [
                 'chat_id' => $chatExternalId,
             ]);
-        }
-
-        if ($messageExternalId !== null && Message::query()->where('external_id', $messageExternalId)->exists()) {
-            return response()->json(['status' => 'duplicate']);
         }
 
         $result = $importer->importMessage($messagePayload);
@@ -67,7 +62,7 @@ class OpenWaMessageWebhookController extends Controller
         }
 
         if ($sessionId !== null) {
-            $mediaDownloader->attempt($message, $sessionId, $chatExternalId, ['source' => 'webhook']);
+            $mediaDownloader->attempt($message, $sessionId, $chatExternalId ?? $message->conversation->external_id, ['source' => 'webhook']);
         }
 
         return response()->json([

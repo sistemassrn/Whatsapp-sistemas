@@ -4,9 +4,10 @@ namespace App\Console\Commands;
 
 use App\Models\Contact;
 use App\Models\Conversation;
-use App\Models\Message;
 use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
+use App\Services\WhatsappMessageImporter;
+use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
@@ -29,11 +30,12 @@ class SyncInitialWhatsapp extends Command
     /**
      * Execute the console command.
      */
-    public function handle(OpenWaClient $client): int
+    public function handle(OpenWaClient $client, WhatsappMessageImporter $importer): int
     {
         $sessionName = (string) config('openwa.session_name');
         $limitChats = max(1, (int) $this->option('limit-chats'));
         $limitMessages = max(1, (int) $this->option('limit-messages'));
+        $syncCutoff = now()->subMonths(3);
 
         if ($sessionName === '') {
             $this->error('OPENWA_SESSION_NAME no está configurado.');
@@ -88,7 +90,7 @@ class SyncInitialWhatsapp extends Command
                 continue;
             }
 
-            $this->syncChat($client, $sessionId, $chat, $limitMessages);
+            $this->syncChat($client, $importer, $sessionId, $chat, $limitMessages, $syncCutoff);
         }
 
         $this->info("Chats procesados: {$this->chatsProcessed}");
@@ -119,7 +121,7 @@ class SyncInitialWhatsapp extends Command
     /**
      * @param  array<string, mixed>  $chat
      */
-    private function syncChat(OpenWaClient $client, string $sessionId, array $chat, int $limitMessages): void
+    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, string $sessionId, array $chat, int $limitMessages, CarbonInterface $syncCutoff): void
     {
         $chatExternalId = $this->firstString($chat, ['id', 'chatId', 'externalId', '_data.id._serialized', '_data.id']);
 
@@ -131,6 +133,20 @@ class SyncInitialWhatsapp extends Command
 
         $this->chatsProcessed++;
 
+        try {
+            $messages = $this->items($client->chatMessages($sessionId, $chatExternalId, $limitMessages), ['data', 'messages', 'items']);
+        } catch (ConnectionException|RequestException $exception) {
+            $this->warn("No se pudieron leer mensajes del chat {$chatExternalId}: {$this->readableOpenWaError($exception)}");
+
+            return;
+        }
+
+        $recentMessages = array_values(array_filter($messages, fn (mixed $message): bool => is_array($message) && $this->isRecentPayload($message, $syncCutoff)));
+
+        if (! $this->shouldSyncChat($chat, $recentMessages, $syncCutoff)) {
+            return;
+        }
+
         $conversation = Conversation::query()->updateOrCreate(
             ['external_id' => $chatExternalId],
             [
@@ -140,25 +156,19 @@ class SyncInitialWhatsapp extends Command
         );
         $this->conversationsUpserted++;
 
-        try {
-            $messages = $this->items($client->chatMessages($sessionId, $chatExternalId, $limitMessages), ['data', 'messages', 'items']);
-        } catch (ConnectionException|RequestException $exception) {
-            $this->warn("No se pudieron leer mensajes del chat {$chatExternalId}: {$this->readableOpenWaError($exception)}");
-
-            return;
-        }
-
         $newestMessage = null;
         $newestTimestamp = null;
 
-        foreach ($messages as $messagePayload) {
+        foreach ($recentMessages as $messagePayload) {
             if (! is_array($messagePayload)) {
                 $this->warn("Mensaje omitido en {$chatExternalId}: OpenWA devolvió una forma no soportada.");
 
                 continue;
             }
 
-            [$message, $created] = $this->syncMessage($conversation, $messagePayload);
+            $result = $importer->importMessage($messagePayload, $chat);
+            $message = $result['message'];
+            $created = $result['created'];
             $messageTimestamp = $message?->sent_at ?? $message?->received_at ?? $message?->created_at;
 
             if ($message !== null && ($newestTimestamp === null || ($messageTimestamp !== null && $messageTimestamp->greaterThan($newestTimestamp)))) {
@@ -201,38 +211,6 @@ class SyncInitialWhatsapp extends Command
                 'phone' => $this->firstString($contact, ['phone', 'number', 'user']),
             ],
         );
-    }
-
-    /**
-     * @param  array<string, mixed>  $messagePayload
-     * @return array{0: Message|null, 1: bool}
-     */
-    private function syncMessage(Conversation $conversation, array $messagePayload): array
-    {
-        $externalId = $this->firstString($messagePayload, ['id', 'messageId', '_data.id.id', '_data.id._serialized']);
-
-        if ($externalId !== null) {
-            $existing = Message::query()->where('external_id', $externalId)->first();
-
-            if ($existing !== null) {
-                return [$existing, false];
-            }
-        }
-
-        $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
-        $timestamp = $this->messageTimestamp($messagePayload);
-
-        $message = Message::query()->create([
-            'conversation_id' => $conversation->id,
-            'external_id' => $externalId,
-            'direction' => $fromMe ? 'outbound' : 'inbound',
-            'body' => $this->firstString($messagePayload, ['body', 'text', 'message', 'content', 'caption']),
-            'status' => $fromMe ? 'accepted' : 'received',
-            'sent_at' => $fromMe ? $timestamp : null,
-            'received_at' => $fromMe ? null : $timestamp,
-        ]);
-
-        return [$message, true];
     }
 
     /**
@@ -313,35 +291,6 @@ class SyncInitialWhatsapp extends Command
     }
 
     /**
-     * @param  array<string, mixed>  $messagePayload
-     */
-    private function messageTimestamp(array $messagePayload): ?Carbon
-    {
-        foreach (['timestamp', 't', 'time', 'createdAt', 'date'] as $key) {
-            $value = data_get($messagePayload, $key);
-
-            if (is_numeric($value)) {
-                $timestamp = (int) $value;
-
-                return Carbon::createFromTimestamp(
-                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
-                    config('app.timezone'),
-                );
-            }
-
-            if (is_string($value) && trim($value) !== '') {
-                try {
-                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
-                } catch (\Throwable) {
-                    continue;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /**
      * @param  array<string, mixed>  $session
      */
     private function sessionId(array $session): ?string
@@ -394,6 +343,79 @@ class SyncInitialWhatsapp extends Command
             'starting', 'qr', 'pairing', 'connecting' => 'connecting',
             default => 'disconnected',
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     * @param  list<mixed>  $recentMessages
+     */
+    private function shouldSyncChat(array $chat, array $recentMessages, CarbonInterface $syncCutoff): bool
+    {
+        if ($this->isSavedOrScheduledChat($chat)) {
+            return true;
+        }
+
+        if ($recentMessages !== []) {
+            return true;
+        }
+
+        $chatTimestamp = $this->payloadTimestamp($chat, ['timestamp', 't', 'time', 'lastMessage.timestamp', 'lastMessage.t', 'lastMessageAt', 'updatedAt']);
+
+        return $chatTimestamp !== null && $chatTimestamp->greaterThanOrEqualTo($syncCutoff);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function isRecentPayload(array $payload, CarbonInterface $syncCutoff): bool
+    {
+        $timestamp = $this->payloadTimestamp($payload, ['timestamp', 't', 'time', 'createdAt', 'date']);
+
+        return $timestamp === null || $timestamp->greaterThanOrEqualTo($syncCutoff);
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     */
+    private function isSavedOrScheduledChat(array $chat): bool
+    {
+        foreach (['isSaved', 'saved', 'isScheduled', 'scheduled', 'isMyContact', 'contact.isMyContact', 'contact.isAddressBookContact'] as $key) {
+            if (data_get($chat, $key) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  list<string>  $keys
+     */
+    private function payloadTimestamp(array $payload, array $keys): ?Carbon
+    {
+        foreach ($keys as $key) {
+            $value = data_get($payload, $key);
+
+            if (is_numeric($value)) {
+                $timestamp = (int) $value;
+
+                return Carbon::createFromTimestamp(
+                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
+                    config('app.timezone'),
+                );
+            }
+
+            if (is_string($value) && trim($value) !== '') {
+                try {
+                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
+                } catch (\Throwable) {
+                    continue;
+                }
+            }
+        }
+
+        return null;
     }
 
     private function readableOpenWaError(ConnectionException|RequestException $exception): string

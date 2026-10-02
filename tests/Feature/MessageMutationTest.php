@@ -148,6 +148,97 @@ it('sends exact OpenWA payload keys from the client', function () {
         ]);
 });
 
+it('applies external webhook edits to an existing message', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $conversation = createConversation();
+    $message = createMessage($conversation, [
+        'direction' => 'inbound',
+        'body' => 'Texto original externo',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $response = $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message_edit',
+        'id' => $message->external_id,
+        'chatId' => $conversation->external_id,
+        'fromMe' => false,
+        'body' => 'Texto editado externo',
+        'editedAt' => now()->timestamp,
+    ]);
+
+    $response->assertOk()->assertJson(['status' => 'stored']);
+
+    $message->refresh();
+
+    expect($message->body)->toBe('Texto editado externo')
+        ->and($message->edited_at)->not->toBeNull()
+        ->and($message->remote_edit_status)->toBe('accepted')
+        ->and($message->edit_error)->toBeNull();
+});
+
+it('applies external webhook deletes to an existing message without requiring chat id', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $conversation = createConversation();
+    $message = createMessage($conversation, [
+        'direction' => 'inbound',
+        'body' => 'Texto eliminado externo',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $response = $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message_revoke_everyone',
+        'id' => $message->external_id,
+        'deleted' => true,
+        'revokedAt' => now()->timestamp,
+    ]);
+
+    $response->assertOk()->assertJson(['status' => 'stored']);
+
+    $message->refresh();
+
+    expect($message->body)->toBe('Texto eliminado externo')
+        ->and($message->deleted_at)->not->toBeNull()
+        ->and($message->remote_delete_status)->toBe('accepted')
+        ->and($message->delete_error)->toBeNull();
+});
+
+it('applies OpenWA revoked webhooks using revokedId instead of the revoke notice id', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $conversation = createConversation();
+    $message = createMessage($conversation, [
+        'direction' => 'inbound',
+        'body' => 'Texto eliminado externo',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $response = $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message.revoked',
+        'data' => [
+            'id' => 'revoke-notification-id',
+            'revokedId' => $message->external_id,
+            'chatId' => $conversation->external_id,
+            'type' => 'revoked',
+            'body' => '',
+            'timestamp' => now()->timestamp,
+        ],
+    ]);
+
+    $response->assertOk()->assertJson(['status' => 'stored']);
+
+    $message->refresh();
+
+    expect(Message::query()->where('external_id', 'revoke-notification-id')->exists())->toBeFalse()
+        ->and($message->deleted_at)->not->toBeNull()
+        ->and($message->remote_delete_status)->toBe('accepted')
+        ->and($message->delete_error)->toBeNull();
+});
+
 function fakeReadyOpenWa(array $overrides = []): void
 {
     config()->set('openwa.base_url', 'http://openwa.test/api');

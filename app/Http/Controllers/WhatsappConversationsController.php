@@ -33,6 +33,7 @@ class WhatsappConversationsController extends Controller
         $selectedConversation = null;
         $messageLimit = min(max($request->integer('message_limit', 50), 1), 300);
         $selectedConversationMessageCount = 0;
+        $firstUnreadMessageId = null;
 
         $conversationsQuery = Conversation::query()
             ->with(['contact', 'lastMessage'])
@@ -75,6 +76,19 @@ class WhatsappConversationsController extends Controller
                     ->get()
                     ->sortBy(fn (Message $message) => $message->sent_at ?? $message->received_at ?? $message->created_at)
                     ->values();
+
+                $firstUnreadMessageId = $this->firstUnreadMessageId($selectedConversation);
+
+                $this->markConversationRead($selectedConversation);
+                $conversations->each(function (Conversation $conversation) use ($selectedConversation): void {
+                    if ($conversation->id === $selectedConversation->id) {
+                        $conversation->forceFill([
+                            'last_read_at' => $selectedConversation->last_read_at,
+                            'marked_unread_at' => null,
+                            'unread_count' => 0,
+                        ]);
+                    }
+                });
             }
         }
 
@@ -112,11 +126,15 @@ class WhatsappConversationsController extends Controller
                     'last_message_body' => $latestMessage?->body,
                     'last_message_direction' => $latestMessage?->direction,
                     'last_message_at' => $latestMessageAt?->toISOString(),
+                    'last_read_at' => $conversation->last_read_at?->toISOString(),
+                    'marked_unread_at' => $conversation->marked_unread_at?->toISOString(),
+                    'unread_count' => $conversation->unread_count,
                 ];
             }),
             'selectedChatId' => $selectedConversation?->external_id ?? ($selectedChatId !== '' ? $selectedChatId : null),
             'messageLimit' => $messageLimit,
             'hasMoreMessages' => $selectedConversationMessageCount > $messageLimit,
+            'firstUnreadMessageId' => $firstUnreadMessageId,
             'messages' => $messages->map(fn (Message $message): array => [
                 'id' => $message->id,
                 'external_id' => $message->external_id,
@@ -149,6 +167,60 @@ class WhatsappConversationsController extends Controller
                 ? 'No existen conversaciones actualmente.'
                 : null,
         ]);
+    }
+
+    public function markUnread(Request $request, Conversation $conversation): RedirectResponse
+    {
+        $conversation->forceFill([
+            'marked_unread_at' => now(),
+        ])->save();
+
+        $redirectParameters = [
+            'chat_search' => $request->string('chat_search')->toString(),
+        ];
+
+        if ($request->string('chat')->toString() !== '') {
+            $redirectParameters['chat'] = $request->string('chat')->toString();
+        }
+
+        return redirect()->route('whatsapp.conversations', $redirectParameters);
+    }
+
+    private function markConversationRead(Conversation $conversation): void
+    {
+        if ($conversation->unread_count === 0 && $conversation->marked_unread_at === null) {
+            return;
+        }
+
+        $conversation->forceFill([
+            'last_read_at' => now(),
+            'marked_unread_at' => null,
+            'unread_count' => 0,
+        ])->save();
+    }
+
+    private function firstUnreadMessageId(Conversation $conversation): ?int
+    {
+        if ($conversation->unread_count === 0 && $conversation->marked_unread_at === null) {
+            return null;
+        }
+
+        if ($conversation->unread_count === 0 && $conversation->marked_unread_at !== null) {
+            return Message::query()
+                ->where('conversation_id', $conversation->id)
+                ->orderByRaw('COALESCE(sent_at, received_at, created_at) desc')
+                ->orderByDesc('id')
+                ->value('id');
+        }
+
+        return Message::query()
+            ->where('conversation_id', $conversation->id)
+            ->when($conversation->last_read_at !== null, function (Builder $query) use ($conversation): void {
+                $query->whereRaw('COALESCE(sent_at, received_at, created_at) > ?', [$conversation->last_read_at]);
+            })
+            ->orderByRaw('COALESCE(sent_at, received_at, created_at) asc')
+            ->orderBy('id')
+            ->value('id');
     }
 
     private static function likeContains(string $value): string

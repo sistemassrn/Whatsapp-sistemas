@@ -2,16 +2,20 @@
 
 namespace App\Console\Commands;
 
+use App\Models\Contact;
+use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
 use App\Services\WhatsappMessageImporter;
 use App\Services\WhatsappMessageMediaDownloader;
+use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Carbon;
 
 #[Signature('whatsapp:sync-recent {--limit-chats=50} {--limit-messages=30}')]
 #[Description('Synchronize recent WhatsApp messages into local persistence')]
@@ -33,6 +37,7 @@ class SyncRecentWhatsapp extends Command
         $sessionName = (string) config('openwa.session_name');
         $limitChats = max(1, (int) $this->option('limit-chats'));
         $limitMessages = max(1, (int) $this->option('limit-messages'));
+        $syncCutoff = now()->subMonths(3);
 
         if ($sessionName === '') {
             $this->info('No hay sesión configurada.');
@@ -89,7 +94,7 @@ class SyncRecentWhatsapp extends Command
                 continue;
             }
 
-            $this->syncChat($client, $importer, $mediaDownloader, $sessionId, $chat, $limitMessages);
+            $this->syncChat($client, $importer, $mediaDownloader, $sessionId, $chat, $limitMessages, $syncCutoff);
         }
 
         $this->info("Chats escaneados: {$this->chatsScanned}");
@@ -120,7 +125,7 @@ class SyncRecentWhatsapp extends Command
     /**
      * @param  array<string, mixed>  $chat
      */
-    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, string $sessionId, array $chat, int $limitMessages): void
+    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, string $sessionId, array $chat, int $limitMessages, CarbonInterface $syncCutoff): void
     {
         $chatExternalId = $this->firstString($chat, ['id', 'chatId', 'externalId', '_data.id._serialized', '_data.id']);
 
@@ -140,9 +145,21 @@ class SyncRecentWhatsapp extends Command
             return;
         }
 
+        $recentMessages = array_values(array_filter($messages, fn (mixed $message): bool => is_array($message) && $this->isRecentPayload($message, $syncCutoff)));
+
+        if (! $this->shouldSyncChat($chat, $recentMessages, $syncCutoff)) {
+            return;
+        }
+
+        if ($recentMessages === [] && $this->isSavedOrScheduledChat($chat)) {
+            $this->upsertConversationFromChat($chat, $chatExternalId);
+
+            return;
+        }
+
         $conversation = null;
 
-        foreach ($messages as $messagePayload) {
+        foreach ($recentMessages as $messagePayload) {
             if (! is_array($messagePayload)) {
                 $this->failures++;
 
@@ -266,6 +283,149 @@ class SyncRecentWhatsapp extends Command
             'starting', 'qr', 'qr_ready', 'pairing', 'connecting' => 'connecting',
             default => 'disconnected',
         };
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     * @param  list<mixed>  $recentMessages
+     */
+    private function shouldSyncChat(array $chat, array $recentMessages, CarbonInterface $syncCutoff): bool
+    {
+        if ($this->isSavedOrScheduledChat($chat)) {
+            return true;
+        }
+
+        if ($recentMessages !== []) {
+            return true;
+        }
+
+        $chatTimestamp = $this->payloadTimestamp($chat, ['timestamp', 't', 'time', 'lastMessage.timestamp', 'lastMessage.t', 'lastMessageAt', 'updatedAt']);
+
+        return $chatTimestamp !== null && $chatTimestamp->greaterThanOrEqualTo($syncCutoff);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     */
+    private function isRecentPayload(array $payload, CarbonInterface $syncCutoff): bool
+    {
+        $timestamp = $this->payloadTimestamp($payload, ['timestamp', 't', 'time', 'createdAt', 'date']);
+
+        return $timestamp === null || $timestamp->greaterThanOrEqualTo($syncCutoff);
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     */
+    private function isSavedOrScheduledChat(array $chat): bool
+    {
+        foreach (['isSaved', 'saved', 'isScheduled', 'scheduled', 'isMyContact', 'contact.isMyContact', 'contact.isAddressBookContact'] as $key) {
+            if (data_get($chat, $key) === true) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     */
+    private function upsertConversationFromChat(array $chat, string $chatExternalId): void
+    {
+        Conversation::query()->updateOrCreate(
+            ['external_id' => $chatExternalId],
+            [
+                'contact_id' => $this->upsertContact($chat, $chatExternalId)?->id,
+                'title' => $this->conversationTitle($chat, $chatExternalId),
+            ],
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     */
+    private function upsertContact(array $chat, string $chatExternalId): ?Contact
+    {
+        if ($this->isGroupChat($chat, $chatExternalId)) {
+            return null;
+        }
+
+        $contact = $this->nestedArray($chat, ['contact', '_contact', 'sender']) ?? $chat;
+        $contactExternalId = $this->firstString($contact, ['id', 'contactId', 'externalId', '_serialized']) ?? $chatExternalId;
+
+        return Contact::query()->updateOrCreate(
+            ['external_id' => $contactExternalId],
+            [
+                'name' => $this->firstString($contact, ['name', 'shortName', 'formattedName']) ?? $this->firstString($chat, ['name', 'title']),
+                'push_name' => $this->firstString($contact, ['pushName', 'notifyName']) ?? $this->firstString($chat, ['pushName']),
+                'phone' => $this->firstString($contact, ['phone', 'number', 'user']),
+            ],
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  list<string>  $keys
+     * @return array<string, mixed>|null
+     */
+    private function nestedArray(array $payload, array $keys): ?array
+    {
+        foreach ($keys as $key) {
+            $value = data_get($payload, $key);
+
+            if (is_array($value)) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     */
+    private function conversationTitle(array $chat, string $fallback): string
+    {
+        return $this->firstString($chat, ['name', 'title', 'pushName', 'formattedTitle']) ?? $fallback;
+    }
+
+    /**
+     * @param  array<string, mixed>  $chat
+     */
+    private function isGroupChat(array $chat, string $chatExternalId): bool
+    {
+        return data_get($chat, 'isGroup') === true || str_contains($chatExternalId, '@g.us');
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  list<string>  $keys
+     */
+    private function payloadTimestamp(array $payload, array $keys): ?Carbon
+    {
+        foreach ($keys as $key) {
+            $value = data_get($payload, $key);
+
+            if (is_numeric($value)) {
+                $timestamp = (int) $value;
+
+                return Carbon::createFromTimestamp(
+                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
+                    config('app.timezone'),
+                );
+            }
+
+            if (is_string($value) && trim($value) !== '') {
+                try {
+                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
+                } catch (\Throwable) {
+                    continue;
+                }
+            }
+        }
+
+        return null;
     }
 
     private function readableSyncError(ConnectionException|RequestException $exception): string

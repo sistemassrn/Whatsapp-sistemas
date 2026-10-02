@@ -366,6 +366,64 @@ it('uses media type fallback as conversation preview when media has no caption',
         );
 });
 
+it('marks a selected conversation as read and exposes unread state', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5497777777777@c.us',
+        'title' => 'Cliente No Leído',
+        'last_message_at' => now(),
+        'unread_count' => 3,
+        'marked_unread_at' => now(),
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'direction' => 'inbound',
+        'body' => 'Mensaje pendiente de lectura',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $this->get(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->where('conversations.0.external_id', $conversation->external_id)
+            ->where('conversations.0.unread_count', 0)
+            ->where('conversations.0.marked_unread_at', null)
+            ->where('firstUnreadMessageId', $message->id),
+        );
+
+    $conversation->refresh();
+
+    expect($conversation->unread_count)->toBe(0)
+        ->and($conversation->marked_unread_at)->toBeNull()
+        ->and($conversation->last_read_at)->not->toBeNull();
+});
+
+it('marks a conversation unread manually without inventing a count', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5498888888888@c.us',
+        'title' => 'Cliente Manual',
+        'last_message_at' => now(),
+        'unread_count' => 0,
+    ]);
+
+    $this->post(route('whatsapp.conversations.mark-unread', $conversation))
+        ->assertRedirect(route('whatsapp.conversations', ['chat_search' => '']));
+
+    $conversation->refresh();
+
+    expect($conversation->unread_count)->toBe(0)
+        ->and($conversation->marked_unread_at)->not->toBeNull();
+});
+
 function bindReadyOpenWaClient(): void
 {
     $client = Mockery::mock(OpenWaClient::class);

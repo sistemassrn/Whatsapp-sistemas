@@ -1,7 +1,8 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronUp, Download, MoreVertical, Paperclip, Pencil, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MoreVertical, Paperclip, Pencil, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
+import { ThemeToggle } from '../../theme';
 
 const MESSAGE_LIMIT_INCREMENT = 50;
 const MAX_MESSAGE_LIMIT = 300;
@@ -10,7 +11,7 @@ const MAX_FILES_PER_SEND = 3;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
 const CHAT_BACKGROUND_STYLE: CSSProperties = {
-    backgroundImage: "linear-gradient(rgba(9, 9, 11, 0.80), rgba(9, 9, 11, 0.80)), url('/img/fondochats.webp')",
+    backgroundImage: "linear-gradient(var(--chat-background-overlay), var(--chat-background-overlay)), url('/img/fondochats.webp')",
     backgroundRepeat: 'repeat',
     backgroundSize: '420px auto',
 };
@@ -38,6 +39,9 @@ type ConversationItem = {
     last_message_body: string | null;
     last_message_direction: string | null;
     last_message_at: string | null;
+    last_read_at: string | null;
+    marked_unread_at: string | null;
+    unread_count: number;
 };
 
 type MessageItem = {
@@ -68,6 +72,7 @@ type MessageItem = {
 };
 
 type ImagePreview = {
+    id: number;
     url: string;
     filename: string;
 };
@@ -93,6 +98,7 @@ type Props = {
     selectedChatId: string | null;
     messageLimit: number;
     hasMoreMessages: boolean;
+    firstUnreadMessageId: number | null;
     messages: MessageItem[];
     emptyState?: string | null;
     connection: ConnectionState;
@@ -106,10 +112,10 @@ type Props = {
     };
 };
 
-const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'emptyState', 'filters', 'selectedChatId'];
+const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'selectedChatId'];
 const requestedAvatarContactIds = new Set<number>();
 
-export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, messages, emptyState, filters, flash }: Props) {
+export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, firstUnreadMessageId, messages, emptyState, filters, flash }: Props) {
     const { auth } = usePage<Props>().props;
     const selectedConversation = conversations.find((conversation) => conversation.external_id === selectedChatId) ?? null;
     const operatorName = operator?.name ?? auth?.user?.nombre ?? auth?.user?.usuario ?? 'Operador';
@@ -213,7 +219,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
     return (
         <>
-            <Head title="Chats WhatsApp" />
+            <Head title="Chats" />
 
             <main className="min-h-screen bg-zinc-950 text-white">
                 {/* <section className="mx-auto flex h-[calc(100vh-3rem)] w-full max-w-7xl overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl shadow-black/50"> */}
@@ -228,7 +234,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                     </p>
                                 </div>
 
-                                <div className="flex shrink-0 gap-2">
+                                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                                    <ThemeToggle />
                                     <form onSubmit={disconnect}>
                                         <button
                                             type="submit"
@@ -293,6 +300,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                 messages={messages}
                                 messageLimit={messageLimit}
                                 hasMoreMessages={hasMoreMessages}
+                                firstUnreadMessageId={firstUnreadMessageId}
                                 filters={filters}
                             />
                         ) : (
@@ -307,6 +315,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
 function ConversationRow({ conversation, active, filters }: { conversation: ConversationItem; active: boolean; filters: Props['filters'] }) {
     const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
+    const [menuOpen, setMenuOpen] = useState(false);
+    const hasUnread = conversation.unread_count > 0 || conversation.marked_unread_at !== null;
 
     useEffect(() => {
         setAvatarUrl(conversation.avatar_url);
@@ -337,32 +347,79 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
             .catch(() => undefined);
     }, [avatarUrl, conversation.contact_id, conversation.avatar_url]);
 
+    const markConversationUnread = () => {
+        setMenuOpen(false);
+
+        router.post(
+            `/whatsapp/conversations/${conversation.id}/mark-unread`,
+            compactQuery({
+                chat: active ? conversation.external_id : null,
+                chat_search: filters.chat_search,
+            }),
+            {
+                only: INBOX_RELOAD_PROPS,
+                preserveScroll: true,
+            },
+        );
+    };
+
     return (
-        <a
-            href={conversationHref(conversation.external_id, filters)}
-            className={`flex gap-3 border-b border-white/10 px-4 py-3 transition-all ${active ? 'bg-zinc-800 rounded-2xl m-1' : 'bg-zinc-900 hover:bg-zinc-800 hover:rounded-2xl m-1'}`}
-        >
-            {avatarUrl ? (
-                <img src={avatarUrl} alt="" className="size-11 shrink-0 rounded-full border border-white/10 object-cover" loading="lazy" />
-            ) : (
-                <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-zinc-800 text-sm font-semibold text-zinc-200">
-                    {initials(conversationTitle(conversation))}
-                </div>
-            )}
+        <div className={`relative border-b border-white/10 transition-all ${active ? 'm-1 rounded-2xl bg-zinc-800' : 'm-1 bg-zinc-900 hover:rounded-2xl hover:bg-zinc-800'}`}>
+            <a href={conversationHref(conversation.external_id, filters)} className="flex gap-3 px-4 py-3">
+                {avatarUrl ? (
+                    <img src={avatarUrl} alt="" className="size-11 shrink-0 rounded-full border border-white/10 object-cover" loading="lazy" />
+                ) : (
+                    <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-zinc-800 text-sm font-semibold text-zinc-200">
+                        {initials(conversationTitle(conversation))}
+                    </div>
+                )}
 
-            <div className="min-w-0 flex-1">
-                <div className="flex items-start justify-between gap-3">
-                    <p className="truncate text-sm font-semibold text-white">{conversationTitle(conversation)}</p>
-                    <time className="shrink-0 text-[11px] text-zinc-500">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
-                </div>
+                <div className="min-w-0 flex-1 pr-14">
+                    <div className="flex items-start justify-between gap-3">
+                        <p className="truncate text-sm font-semibold text-white">{conversationTitle(conversation)}</p>
+                        <time className="shrink-0 text-[11px] text-zinc-500 absolute top-3 right-3">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
+                    </div>
 
-                <p className="mt-1 truncate text-sm text-zinc-400">
-                    {conversation.last_message_direction === 'outbound' ? 'Vos: ' : ''}
-                    {conversation.last_message_preview ?? conversation.last_message_body ?? 'Sin vista previa'}
-                </p>
+                    <p className="mt-1 truncate text-sm text-zinc-400">
+                        {conversation.last_message_direction === 'outbound' ? 'Vos: ' : ''}
+                        {conversation.last_message_preview ?? conversation.last_message_body ?? 'Sin vista previa'}
+                    </p>
+                </div>
+            </a>
+
+            <div className="absolute top-9 right-1 flex items-center gap-2">
+                <UnreadBadge hasUnread={hasUnread} />
+                <div className="relative">
+                    <button
+                        type="button"
+                        onClick={() => setMenuOpen((current) => !current)}
+                        className="grid size-7 place-items-center rounded-full text-zinc-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00a884]"
+                        aria-label="Opciones de la conversación"
+                        aria-expanded={menuOpen}
+                        aria-haspopup="menu"
+                    >
+                        <MoreVertical className="size-4" />
+                    </button>
+                    {menuOpen ? (
+                        <div className="app-menu absolute right-0 z-20 mt-2 w-44 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
+                            <button type="button" onClick={markConversationUnread} className="app-menu-item flex w-full items-center rounded-lg px-3 py-2 text-left" role="menuitem">
+                                Marcar como no leído
+                            </button>
+                        </div>
+                    ) : null}
+                </div>
+                
             </div>
-        </a>
+        </div>
     );
+}
+
+function UnreadBadge({ hasUnread }: { hasUnread: boolean }) {
+    if (hasUnread) {
+        return <span className="size-2.5 shrink-0 rounded-full bg-[#00a884]" aria-label="Mensajes no leídos" />;
+    }
+
+    return null;
 }
 
 function MessagePanel({
@@ -370,12 +427,14 @@ function MessagePanel({
     messages,
     messageLimit,
     hasMoreMessages,
+    firstUnreadMessageId,
     filters,
 }: {
     conversation: ConversationItem;
     messages: MessageItem[];
     messageLimit: number;
     hasMoreMessages: boolean;
+    firstUnreadMessageId: number | null;
     filters: Props['filters'];
 }) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -451,6 +510,11 @@ function MessagePanel({
 
     const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const latestMessageKey = latestMessage ? `${latestMessage.id}:${latestMessage.sent_at ?? latestMessage.received_at ?? latestMessage.created_at}` : null;
+    const imageGallery = useMemo(
+        () => messages.flatMap((message) => (message.type === 'image' && message.media_url ? [{ id: message.id, url: message.media_url, filename: message.media_filename ?? 'imagen' }] : [])),
+        [messages],
+    );
+    const activeImageIndex = imagePreview ? imageGallery.findIndex((image) => image.id === imagePreview.id) : -1;
 
     useLayoutEffect(() => {
         const scrollContainer = scrollContainerRef.current;
@@ -626,6 +690,14 @@ function MessagePanel({
         setActiveMatchIndex((index) => (index + 1) % searchMatches.length);
     };
 
+    const showGalleryImage = (index: number) => {
+        if (imageGallery.length === 0) {
+            return;
+        }
+
+        setImagePreview(imageGallery[(index + imageGallery.length) % imageGallery.length]);
+    };
+
     return (
         <>
             <header className="border-b border-white/10 bg-zinc-900 p-3 px-5">
@@ -634,32 +706,34 @@ function MessagePanel({
                         <h2 className="text-lg font-semibold text-white">{conversationTitle(conversation)}</h2>
                     </div>
 
-                    <SearchForm
-                        placeholder="Buscar mensajes"
-                        value={messageSearch}
-                        onChange={setMessageSearch}
-                        onSubmit={goToNextMatch}
-                        onClear={() => {
-                            setMessageSearch('');
-                            setActiveMatchIndex(0);
-                        }}
-                        actions={
-                            <>
-                                {normalizedMessageSearch !== '' ? (
-                                    <span className="text-xs text-zinc-500">
-                                        {searchMatches.length === 0 ? '0' : `${activeMatchPosition + 1}/${searchMatches.length}`}
-                                    </span>
-                                ) : null}
-                                <button type="button" onClick={goToPreviousMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado anterior">
-                                    <ChevronUp className="size-4" />
-                                </button>
-                                <button type="button" onClick={goToNextMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado siguiente">
-                                    <ChevronDown className="size-4" />
-                                </button>
-                            </>
-                        }
-                        className="w-72"
-                    />
+                    <div className="flex items-center gap-3">
+                        <SearchForm
+                            placeholder="Buscar mensajes"
+                            value={messageSearch}
+                            onChange={setMessageSearch}
+                            onSubmit={goToNextMatch}
+                            onClear={() => {
+                                setMessageSearch('');
+                                setActiveMatchIndex(0);
+                            }}
+                            actions={
+                                <>
+                                    {normalizedMessageSearch !== '' ? (
+                                        <span className="text-xs text-zinc-500">
+                                            {searchMatches.length === 0 ? '0' : `${activeMatchPosition + 1}/${searchMatches.length}`}
+                                        </span>
+                                    ) : null}
+                                    <button type="button" onClick={goToPreviousMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado anterior">
+                                        <ChevronUp className="size-4" />
+                                    </button>
+                                    <button type="button" onClick={goToNextMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado siguiente">
+                                        <ChevronDown className="size-4" />
+                                    </button>
+                                </>
+                            }
+                            className="w-72"
+                        />
+                    </div>
                 </div>
             </header>
 
@@ -706,17 +780,20 @@ function MessagePanel({
                                 </button>
                             </div>
                         ) : null}
+                        {firstUnreadMessageId !== null && !messages.some((message) => message.id === firstUnreadMessageId) ? <UnreadDivider text="Hay mensajes no leídos más arriba" /> : null}
                         {messages.map((message) => (
-                            <MessageBubble
-                                key={message.id}
-                                message={message}
-                                onOpenImage={setImagePreview}
-                                searchQuery={messageSearch}
-                                activeSearchMatch={searchMatches[activeMatchPosition] === message.id}
-                                refCallback={(element) => {
-                                    messageRefs.current[message.id] = element;
-                                }}
-                            />
+                            <div key={message.id}>
+                                {message.id === firstUnreadMessageId ? <UnreadDivider text="Mensajes no leídos" /> : null}
+                                <MessageBubble
+                                    message={message}
+                                    onOpenImage={setImagePreview}
+                                    searchQuery={messageSearch}
+                                    activeSearchMatch={searchMatches[activeMatchPosition] === message.id}
+                                    refCallback={(element) => {
+                                        messageRefs.current[message.id] = element;
+                                    }}
+                                />
+                            </div>
                         ))}
                     </div>
                 )}
@@ -763,7 +840,7 @@ function MessagePanel({
                         <label className="sr-only" htmlFor="message-body">
                             Mensaje
                         </label>
-                        <div className="flex min-h-10 flex-1 items-end rounded-2xl bg-zinc-900 px-2">
+                        <div className="app-input-shell flex min-h-10 flex-1 items-end">
                             <textarea
                                 ref={textareaRef}
                                 id="message-body"
@@ -774,7 +851,7 @@ function MessagePanel({
                                 rows={1}
                                 maxLength={4000}
                                 placeholder={data.media.length > 0 ? 'Agregá un comentario' : 'Escribí un mensaje'}
-                                className="max-h-36 min-h-10 flex-1 resize-none bg-zinc-900 px-2 pt-3 pb-1.5 text-sm leading-5 text-white outline-none transition placeholder:text-zinc-500"
+                                className="app-input-control max-h-36 min-h-10 flex-1 resize-none px-2 pt-3 pb-1.5 text-sm leading-5 outline-none transition placeholder:text-zinc-500"
                             />
                         </div>
                         <button
@@ -792,8 +869,29 @@ function MessagePanel({
                     {errors.idempotency_key ? <p className="mt-2 text-sm text-red-600">{errors.idempotency_key}</p> : null}
                 </form>
             </footer>
-            {imagePreview ? <ImageViewerModal image={imagePreview} onClose={() => setImagePreview(null)} /> : null}
+            {imagePreview ? (
+                <ImageViewerModal
+                    image={imagePreview}
+                    positionLabel={activeImageIndex >= 0 ? `${activeImageIndex + 1}/${imageGallery.length}` : null}
+                    canNavigate={imageGallery.length > 1}
+                    onPrevious={() => showGalleryImage(activeImageIndex - 1)}
+                    onNext={() => showGalleryImage(activeImageIndex + 1)}
+                    onClose={() => setImagePreview(null)}
+                />
+            ) : null}
         </>
+    );
+}
+
+function UnreadDivider({ text }: { text: string }) {
+    return (
+        <div className="my-3 flex items-center gap-3" role="separator" aria-label={text}>
+            <span className="h-px flex-1 bg-[#00a884]/30" />
+            <span className="rounded-full border border-[#00a884]/30 bg-zinc-900/90 px-3 py-1 text-[11px] font-semibold text-[#007a63] shadow-sm">
+                {text}
+            </span>
+            <span className="h-px flex-1 bg-[#00a884]/30" />
+        </div>
     );
 }
 
@@ -878,7 +976,7 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                     <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-zinc-400 italic">Mensaje eliminado</p>
                 ) : (
                     <>
-                        <MessageMedia message={message} onOpenImage={onOpenImage} />
+                <MessageMedia message={message} onOpenImage={onOpenImage} />
                         {message.body ? (
                             <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-white">
                                 {activeSearchMatch ? <HighlightedText text={message.body} query={searchQuery} /> : message.body}
@@ -976,7 +1074,7 @@ function MessageActionsPanel({
                             onChange={(event) => onEditBodyChange(event.target.value)}
                             maxLength={4000}
                             rows={5}
-                            className="h-32 w-full resize-none rounded-xl border border-emerald-700/60 bg-zinc-950 px-3 py-2 text-sm text-white outline-none focus:border-[#00a884]"
+                            className="app-input-control h-32 w-full resize-none rounded-xl border border-emerald-700/60 px-3 py-2 text-sm outline-none focus:border-[#00a884]"
                         />
                         <div className="flex justify-end gap-2 text-xs font-semibold items-center">
                             <p className="text-right text-xs text-zinc-500">{editBody.length}/2000</p>
@@ -1018,7 +1116,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
     const parts = text.split(new RegExp(`(${escapeRegExp(needle)})`, 'gi'));
 
     return parts.map((part, index) => part.toLocaleLowerCase() === needle.toLocaleLowerCase() ? (
-        <mark key={`${part}-${index}`} className="rounded bg-amber-300/30 px-0.5 text-amber-100">
+        <mark key={`${part}-${index}`} className="app-search-highlight rounded px-0.5">
             {part}
         </mark>
     ) : part);
@@ -1045,7 +1143,7 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
         return (
             <button
                 type="button"
-                onClick={() => onOpenImage({ url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
+                onClick={() => onOpenImage({ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
                 className="mb-2 block overflow-hidden rounded-lg text-left"
                 aria-label="Abrir imagen"
             >
@@ -1079,22 +1177,43 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
     );
 }
 
-function ImageViewerModal({ image, onClose }: { image: ImagePreview; onClose: () => void }) {
+function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNext, onClose }: { image: ImagePreview; positionLabel: string | null; canNavigate: boolean; onPrevious: () => void; onNext: () => void; onClose: () => void }) {
     const [scale, setScale] = useState(1);
     const [position, setPosition] = useState({ x: 0, y: 0 });
     const dragStartRef = useRef<{ pointerId: number; x: number; y: number; positionX: number; positionY: number } | null>(null);
 
     useEffect(() => {
-        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+        setScale(1);
+        setPosition({ x: 0, y: 0 });
+    }, [image.id]);
+
+    useEffect(() => {
+        const handleViewerKeyDown = (event: globalThis.KeyboardEvent) => {
             if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
                 onClose();
+                return;
+            }
+
+            if (event.key === 'ArrowLeft' && canNavigate) {
+                event.preventDefault();
+                event.stopPropagation();
+                onPrevious();
+                return;
+            }
+
+            if (event.key === 'ArrowRight' && canNavigate) {
+                event.preventDefault();
+                event.stopPropagation();
+                onNext();
             }
         };
 
-        window.addEventListener('keydown', closeOnEscape);
+        window.addEventListener('keydown', handleViewerKeyDown, true);
 
-        return () => window.removeEventListener('keydown', closeOnEscape);
-    }, [onClose]);
+        return () => window.removeEventListener('keydown', handleViewerKeyDown, true);
+    }, [canNavigate, onClose, onNext, onPrevious]);
 
     const zoom = (direction: 'in' | 'out') => {
         setScale((currentScale) => {
@@ -1143,10 +1262,19 @@ function ImageViewerModal({ image, onClose }: { image: ImagePreview; onClose: ()
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex flex-col bg-black/90 text-white" role="dialog" aria-modal="true" aria-label="Vista ampliada de imagen">
+        <div className="theme-preserve-dark fixed inset-0 z-50 flex flex-col bg-black/90 text-white" role="dialog" aria-modal="true" aria-label="Vista ampliada de imagen">
             <header className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
-                <p className="truncate text-sm font-medium">{image.filename}</p>
+                <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{image.filename}</p>
+                    {positionLabel ? <p className="mt-0.5 text-xs text-zinc-400">{positionLabel}</p> : null}
+                </div>
                 <div className="flex items-center gap-2">
+                    <button type="button" onClick={onPrevious} disabled={!canNavigate} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Imagen anterior">
+                        <ChevronLeft className="size-5" />
+                    </button>
+                    <button type="button" onClick={onNext} disabled={!canNavigate} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Imagen siguiente">
+                        <ChevronRight className="size-5" />
+                    </button>
                     <a href={image.url} download={image.filename} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10" aria-label="Descargar imagen">
                         <Download className="size-5" />
                     </a>
@@ -1182,7 +1310,7 @@ function ImageViewerModal({ image, onClose }: { image: ImagePreview; onClose: ()
 
 function EmptyConversation() {
     return (
-        <div className="grid h-full place-items-center bg-black p-8 text-center">
+        <div className="grid h-full place-items-center p-8 text-center" style={CHAT_BACKGROUND_STYLE}>
             <div className="max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-8">
                 <p className="text-sm leading-6 text-zinc-200">
                     Elegí un chat para ver los mensajes.
@@ -1215,7 +1343,7 @@ function SearchForm({
                 event.preventDefault();
                 onSubmit();
             }}
-            className={`flex items-center gap-2 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2 ${className}`}
+            className={`app-input-shell flex items-center gap-2 rounded-xl border px-3 py-2 ${className}`}
         >
             <Search className="size-4 text-zinc-500" />
             <input
@@ -1223,7 +1351,7 @@ function SearchForm({
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
                 placeholder={placeholder}
-                className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-500"
+                className="w-full bg-transparent text-sm text-(--app-control-text) outline-none placeholder:text-zinc-500"
             />
             {value.trim() !== '' ? (
                 <button type="button" onClick={onClear} className="text-xs font-medium text-zinc-400 transition hover:text-green-300">

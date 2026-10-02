@@ -4,7 +4,6 @@ use App\Http\Controllers\ConversationMessageController;
 use App\Http\Controllers\MessageMediaController;
 use App\Http\Controllers\MessageMutationController;
 use App\Http\Controllers\NexoAuthController;
-use App\Http\Controllers\TestingAccessController;
 use App\Http\Controllers\WhatsappConnectionController;
 use App\Http\Controllers\WhatsappContactAvatarController;
 use App\Http\Controllers\WhatsappConversationsController;
@@ -14,12 +13,6 @@ Route::get('/', [NexoAuthController::class, 'create'])->name('home');
 Route::get('/login', [NexoAuthController::class, 'create'])->name('login');
 Route::post('/login', [NexoAuthController::class, 'store'])->name('login.store');
 Route::post('/logout', [NexoAuthController::class, 'destroy'])->name('logout');
-
-Route::post('/testing-access', [TestingAccessController::class, 'store'])
-    ->name('testing-access.store');
-
-Route::post('/testing-access/logout', [TestingAccessController::class, 'destroy'])
-    ->name('testing-access.destroy');
 
 Route::get('/whatsapp/connect', [WhatsappConnectionController::class, 'index'])
     ->middleware('auth')
@@ -36,6 +29,10 @@ Route::post('/whatsapp/disconnect', [WhatsappConnectionController::class, 'disco
 Route::get('/whatsapp/conversations', WhatsappConversationsController::class)
     ->middleware('auth')
     ->name('whatsapp.conversations');
+
+Route::post('/whatsapp/conversations/{conversation}/mark-unread', [WhatsappConversationsController::class, 'markUnread'])
+    ->middleware('auth')
+    ->name('whatsapp.conversations.mark-unread');
 
 Route::post('/whatsapp/contacts/{contact}/avatar', WhatsappContactAvatarController::class)
     ->middleware('auth')

@@ -6,9 +6,9 @@
 
 @font-face {
     font-family: 'Rubik';
-    src: url('/fonts/Rubik-VariableFont_wght.ttf') format('opentype');
+    src: url('/fonts/Rubik-VariableFont_wght.ttf') format('truetype');
     font-style: normal;
-    font-weight: 300;
+    font-weight: 300 900;
     font-display: swap;
 }
 
@@ -19,6 +19,42 @@
 }
 
 @layer base {
+    :root {
+        color-scheme: dark;
+        --chat-background-overlay: rgba(9, 9, 11, 0.8);
+        --app-bg: rgb(9 9 11);
+        --app-surface: rgb(24 24 27);
+        --app-surface-strong: rgb(39 39 42);
+        --app-surface-soft: rgb(24 24 27 / 0.7);
+        --app-border: rgb(255 255 255 / 0.1);
+        --app-text: rgb(250 250 250);
+        --app-muted: rgb(161 161 170);
+        --app-faint: rgb(113 113 122);
+        --app-control-bg: rgb(24, 24, 27);
+        --app-control-text: rgb(244 244 245);
+        --app-control-border: rgb(63 63 70);
+        --app-control-hover: rgb(39 39 42);
+        --app-accent: rgb(0 168 132);
+    }
+
+    :root[data-theme='light'] {
+        color-scheme: light;
+        --chat-background-overlay: rgba(250, 250, 250, 0.74);
+        --app-bg: rgb(250 250 250);
+        --app-surface: rgb(255 255 255);
+        --app-surface-strong: rgb(244 244 245);
+        --app-surface-soft: rgb(255 255 255 / 0.82);
+        --app-border: rgb(212 212 216);
+        --app-text: rgb(24 24 27);
+        --app-muted: rgb(63 63 70);
+        --app-faint: rgb(82 82 91);
+        --app-control-bg: rgb(255 255 255);
+        --app-control-text: rgb(24 24 27);
+        --app-control-border: rgb(161 161 170);
+        --app-control-hover: rgb(244 244 245);
+        --app-accent: rgb(0 128 105);
+    }
+
     body {
         @apply bg-black font-sans text-zinc-100 antialiased;
     }
@@ -51,5 +87,153 @@
 
     *::-webkit-scrollbar-thumb:hover {
         background: rgb(161 161 170 / 60%);
+    }
+}
+
+@layer components {
+    .theme-toggle {
+        border-color: var(--app-control-border);
+        background-color: var(--app-control-bg);
+        color: var(--app-control-text);
+        box-shadow: 0 1px 2px rgb(0 0 0 / 0.08);
+    }
+
+    .theme-toggle:hover {
+        border-color: var(--app-accent);
+        background-color: var(--app-control-hover);
+        color: var(--app-accent);
+    }
+
+    .app-menu {
+        border-color: var(--app-border);
+        background-color: var(--app-surface);
+        color: var(--app-text);
+    }
+
+    .app-menu-item {
+        color: var(--app-text);
+    }
+
+    .app-menu-item:hover,
+    .app-menu-item:focus-visible {
+        background-color: var(--app-surface-strong);
+        outline: none;
+    }
+
+    .app-input-shell {
+        border-color: var(--app-border);
+        background-color: var(--app-control-bg);
+        color: var(--app-control-text);
+    }
+
+    .app-input-control {
+        background-color: var(--app-control-bg);
+        color: var(--app-control-text);
+    }
+
+    .app-search-highlight {
+        background-color: rgb(252 211 77 / 0.38);
+        color: rgb(254 243 199);
+    }
+
+    :root[data-theme='light'] .app-search-highlight {
+        background-color: rgb(245 158 11 / 0.32);
+        color: rgb(69 26 3);
+    }
+}
+
+@layer utilities {
+    :root[data-theme='light'] .bg-black,
+    :root[data-theme='light'] .bg-zinc-950 {
+        background-color: rgb(250 250 250);
+    }
+
+    :root[data-theme='light'] .bg-zinc-900 {
+        background-color: rgb(255 255 255);
+    }
+
+    :root[data-theme='light'] .bg-zinc-900\/70,
+    :root[data-theme='light'] .bg-zinc-900\/90 {
+        background-color: rgb(255 255 255 / 0.92);
+    }
+
+    :root[data-theme='light'] .bg-zinc-800 {
+        background-color: rgb(244 244 245);
+    }
+
+    :root[data-theme='light'] .bg-white\/10 {
+        background-color: rgb(244 244 245 / 0.9);
+    }
+
+    :root[data-theme='light'] .border-white\/10,
+    :root[data-theme='light'] .border-zinc-700,
+    :root[data-theme='light'] .border-zinc-500 {
+        border-color: rgb(228 228 231);
+    }
+
+    :root[data-theme='light'] .text-white,
+    :root[data-theme='light'] .text-zinc-100,
+    :root[data-theme='light'] .text-zinc-200 {
+        color: rgb(24 24 27);
+    }
+
+    :root[data-theme='light'] .text-zinc-300 {
+        color: rgb(63 63 70);
+    }
+
+    :root[data-theme='light'] .text-zinc-400,
+    :root[data-theme='light'] .text-zinc-500 {
+        color: rgb(82 82 91);
+    }
+
+    :root[data-theme='light'] .text-red-200,
+    :root[data-theme='light'] .text-red-300,
+    :root[data-theme='light'] .hover\:text-red-400:hover {
+        color: rgb(185 28 28);
+    }
+
+    :root[data-theme='light'] .hover\:border-red-600:hover,
+    :root[data-theme='light'] .hover\:border-red-700:hover {
+        border-color: rgb(220 38 38);
+    }
+
+    :root[data-theme='light'] .hover\:border-white:hover {
+        border-color: rgb(82 82 91);
+    }
+
+    :root[data-theme='light'] .hover\:text-green-300:hover {
+        color: rgb(0 128 105);
+    }
+
+    :root[data-theme='light'] .placeholder\:text-zinc-500::placeholder {
+        color: rgb(113 113 122);
+    }
+
+    :root[data-theme='light'] .hover\:bg-zinc-800:hover,
+    :root[data-theme='light'] .hover\:bg-white\/10:hover {
+        background-color: rgb(244 244 245);
+    }
+
+    :root[data-theme='light'] .hover\:text-white:hover {
+        color: rgb(24 24 27);
+    }
+
+    :root[data-theme='light'] .theme-preserve-dark,
+    :root[data-theme='light'] .theme-preserve-dark .text-white,
+    :root[data-theme='light'] .theme-preserve-dark .text-zinc-100,
+    :root[data-theme='light'] .theme-preserve-dark .hover\:text-white:hover {
+        color: rgb(244 244 245);
+    }
+
+    :root[data-theme='light'] .theme-preserve-dark .text-zinc-400 {
+        color: rgb(161 161 170);
+    }
+
+    :root[data-theme='light'] .theme-preserve-dark .border-white\/10 {
+        border-color: rgb(255 255 255 / 0.1);
+    }
+
+    :root[data-theme='light'] .theme-preserve-dark .hover\:bg-white\/10:hover {
+        background-color: rgb(255 255 255 / 0.1);
     }
 }

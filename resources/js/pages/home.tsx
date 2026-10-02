@@ -3,6 +3,7 @@ import { Eye, EyeOff } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import { ThemeToggle } from '../theme';
 
 export default function Home() {
     const { data, setData, post, processing, errors } = useForm({
@@ -26,9 +27,12 @@ export default function Home() {
         <>
             <Head title="Iniciar sesión" />
 
-            <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-9 py-9 text-white">
+            <main className="relative flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-9 py-9 text-white">
+                <ThemeToggle className="absolute top-5 right-5" />
+                <img src="/logo-srn.png" alt="SRN" className="flex mb-5 h-16 w-auto object-contain" />
+                {/* <img src="/logo-srn.png" alt="SRN" className="mx-auto mb-5 h-16 w-auto object-contain" /> */}
                 <section className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-6">
-                    <h1 className="text-2xl font-semibold tracking-tight text-white">
+                    <h1 className="text-2xl font-normal tracking-tight text-white">
                         Iniciar sesión
                     </h1>
                     <p className="my-4 text-base text-zinc-300">
@@ -103,7 +107,7 @@ export default function Home() {
                         <button
                             type="submit"
                             disabled={processing}
-                            className="mt-4! w-full rounded-lg border border-green-500/50 bg-green-500/15 px-4 py-1.5 text-md font-normal text-green-200 transition hover:bg-green-500/25 disabled:cursor-not-allowed disabled:opacity-60"
+                            className="mt-4! w-full rounded-lg border border-[#008069] bg-[#00a884] px-4 py-1.5 text-md font-semibold text-white transition hover:bg-[#008069] disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             {processing ? 'Ingresando...' : 'Ingresar'}
                         </button>

@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -48,6 +49,12 @@ class WhatsappMessageImporter
             $candidate = data_get($payload, $key);
 
             if (is_array($candidate)) {
+                foreach (['event', 'eventType', 'action', 'kind'] as $eventKey) {
+                    if (! array_key_exists($eventKey, $candidate) && array_key_exists($eventKey, $payload)) {
+                        $candidate[$eventKey] = $payload[$eventKey];
+                    }
+                }
+
                 return $candidate;
             }
         }
@@ -63,21 +70,23 @@ class WhatsappMessageImporter
     public function importMessage(array $messagePayload, ?array $chatPayload = null): array
     {
         $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
-        $chatExternalId = $this->chatExternalId($messagePayload, $fromMe)
-            ?? $this->chatExternalIdFromChat($chatPayload ?? []);
-
-        if ($chatExternalId === null) {
-            return ['message' => null, 'created' => false, 'reason' => 'missing_chat_id'];
-        }
-
-        $messageExternalId = $this->firstString($messagePayload, ['id', 'messageId', '_data.id.id', '_data.id._serialized']);
+        $messageExternalId = $this->messageExternalId($messagePayload);
 
         if ($messageExternalId !== null) {
             $existing = Message::query()->where('external_id', $messageExternalId)->first();
 
             if ($existing !== null) {
-                return ['message' => $existing, 'created' => false, 'reason' => 'duplicate'];
+                $this->applyRemoteMutation($existing, $messagePayload);
+
+                return ['message' => $existing->refresh(), 'created' => false, 'reason' => 'duplicate'];
             }
+        }
+
+        $chatExternalId = $this->chatExternalId($messagePayload, $fromMe)
+            ?? $this->chatExternalIdFromChat($chatPayload ?? []);
+
+        if ($chatExternalId === null) {
+            return ['message' => null, 'created' => false, 'reason' => 'missing_chat_id'];
         }
 
         $messageType = $this->messageType($messagePayload);
@@ -110,18 +119,192 @@ class WhatsappMessageImporter
             ];
 
             $messageData = array_merge($messageData, $this->mediaAttributes($messagePayload, $media, $messageType));
+            $messageData = array_merge($messageData, $this->mutationAttributes($messagePayload));
 
             $message = Message::query()->create($messageData);
+            $messageTimestamp = $message->sent_at ?? $message->received_at ?? $message->created_at;
 
             $conversation->forceFill([
                 'last_message_id' => $message->id,
-                'last_message_at' => $message->sent_at ?? $message->received_at ?? $message->created_at,
+                'last_message_at' => $messageTimestamp,
             ])->save();
+
+            if (! $fromMe && $this->shouldIncreaseUnreadCount($conversation, $messageTimestamp)) {
+                $conversation->increment('unread_count');
+            }
 
             return $message;
         });
 
         return ['message' => $message, 'created' => true, 'reason' => null];
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    public function messageExternalId(array $messagePayload): ?string
+    {
+        if ($this->isDeletedPayload($messagePayload)) {
+            return $this->firstString($messagePayload, [
+                'revokedId',
+                'message.revokedId',
+                'data.revokedId',
+                'payload.revokedId',
+                'revokedMessageId',
+                'deletedMessageId',
+                'originalMessageId',
+                'protocolMessageKey.id',
+                '_data.protocolMessageKey.id',
+                'key.id',
+                'id',
+                'messageId',
+                'message.id',
+                'message.messageId',
+                'msg.id',
+                '_data.id.id',
+                '_data.id._serialized',
+            ]);
+        }
+
+        return $this->firstString($messagePayload, [
+            'id',
+            'messageId',
+            'message.id',
+            'message.messageId',
+            'msg.id',
+            'key.id',
+            'protocolMessageKey.id',
+            '_data.id.id',
+            '_data.id._serialized',
+            '_data.protocolMessageKey.id',
+        ]);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function applyRemoteMutation(Message $message, array $messagePayload): void
+    {
+        $attributes = $this->mutationAttributes($messagePayload);
+        $body = $this->messageBody($messagePayload, $this->messageType($messagePayload));
+
+        if (! array_key_exists('deleted_at', $attributes) && $body !== null && $body !== $message->body) {
+            $attributes['body'] = $body;
+            $attributes['edited_at'] = $attributes['edited_at'] ?? $this->mutationTimestamp($messagePayload) ?? now();
+            $attributes['remote_edit_status'] = 'accepted';
+            $attributes['edit_error'] = null;
+        }
+
+        if ($attributes !== []) {
+            $message->update($attributes);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @return array<string, mixed>
+     */
+    private function mutationAttributes(array $messagePayload): array
+    {
+        if ($this->isDeletedPayload($messagePayload)) {
+            return [
+                'deleted_at' => $this->mutationTimestamp($messagePayload) ?? now(),
+                'remote_delete_status' => 'accepted',
+                'delete_error' => null,
+            ];
+        }
+
+        if ($this->isEditedPayload($messagePayload)) {
+            return [
+                'edited_at' => $this->mutationTimestamp($messagePayload) ?? now(),
+                'remote_edit_status' => 'accepted',
+                'edit_error' => null,
+            ];
+        }
+
+        return [];
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function isEditedPayload(array $messagePayload): bool
+    {
+        foreach (['isEdited', 'edited', 'hasEdit', '_data.isEdited', '_data.edited'] as $key) {
+            if (data_get($messagePayload, $key) === true) {
+                return true;
+            }
+        }
+
+        return $this->payloadEventContains($messagePayload, ['edit', 'edited']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function isDeletedPayload(array $messagePayload): bool
+    {
+        foreach (['isDeleted', 'deleted', 'isRevoked', 'revoked', '_data.isDeleted', '_data.isRevoked'] as $key) {
+            if (data_get($messagePayload, $key) === true) {
+                return true;
+            }
+        }
+
+        return $this->payloadEventContains($messagePayload, ['delete', 'deleted', 'revoke', 'revoked']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @param  list<string>  $needles
+     */
+    private function payloadEventContains(array $messagePayload, array $needles): bool
+    {
+        $event = strtolower((string) ($this->firstString($messagePayload, [
+            'event',
+            'eventType',
+            'type',
+            'action',
+            'kind',
+            'notificationType',
+            '_data.type',
+        ]) ?? ''));
+
+        foreach ($needles as $needle) {
+            if (str_contains($event, $needle)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function mutationTimestamp(array $messagePayload): ?Carbon
+    {
+        foreach (['editedAt', 'editTimestamp', 'deletedAt', 'deleteTimestamp', 'revokedAt', 'updatedAt'] as $key) {
+            $value = data_get($messagePayload, $key);
+
+            if (is_numeric($value)) {
+                $timestamp = (int) $value;
+
+                return Carbon::createFromTimestamp(
+                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
+                    config('app.timezone'),
+                );
+            }
+
+            if (is_string($value) && trim($value) !== '') {
+                try {
+                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
+                } catch (\Throwable) {
+                    continue;
+                }
+            }
+        }
+
+        return null;
     }
 
     public function refreshConversationLastMessage(Conversation $conversation): void
@@ -335,7 +518,7 @@ class WhatsappMessageImporter
             return $this->firstString($messagePayload, ['body', 'text', 'message', 'content', 'caption']);
         }
 
-        return $this->firstString($messagePayload, ['caption', 'text', 'message']);
+        return $this->firstString($messagePayload, ['caption', 'body', 'text', 'message']);
     }
 
     private function defaultMimeForType(string $messageType): string
@@ -351,6 +534,15 @@ class WhatsappMessageImporter
     private function isAllowedMime(string $mimeType): bool
     {
         return in_array($this->baseMimeType($mimeType), self::ALLOWED_MEDIA_MIME_TYPES, true);
+    }
+
+    private function shouldIncreaseUnreadCount(Conversation $conversation, ?CarbonInterface $messageTimestamp): bool
+    {
+        if ($messageTimestamp === null) {
+            return true;
+        }
+
+        return $conversation->last_read_at === null || $messageTimestamp->greaterThan($conversation->last_read_at);
     }
 
     private function safeFilename(string $filename, string $mimeType): string
