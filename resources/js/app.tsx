@@ -4,7 +4,12 @@ import { createRoot } from 'react-dom/client';
 import { Toaster } from 'react-hot-toast';
 import { initializeTheme, useTheme } from './theme';
 
-const appName = import.meta.env.VITE_APP_NAME;
+const appName =
+    import.meta.env.VITE_APP_NAME ||
+    document
+        .querySelector('meta[name="application-name"]')
+        ?.getAttribute('content') ||
+    'Opensis';
 const pages = import.meta.glob<ResolvedComponent>('./pages/**/*.tsx');
 
 initializeTheme();
