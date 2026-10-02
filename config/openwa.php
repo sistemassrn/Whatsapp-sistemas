@@ -7,6 +7,8 @@ return [
 
     'webhook_secret' => env('OPENWA_WEBHOOK_SECRET'),
 
+    'require_webhook_secret' => (bool) env('OPENWA_REQUIRE_WEBHOOK_SECRET', env('APP_ENV') === 'production'),
+
     'session_name' => env('OPENWA_SESSION_NAME', 'whatsapp-sistemas'),
 
     'timeout' => (int) env('OPENWA_TIMEOUT', 5),

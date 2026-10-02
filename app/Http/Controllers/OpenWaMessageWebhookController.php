@@ -19,11 +19,13 @@ class OpenWaMessageWebhookController extends Controller
         $configuredSecret = config('openwa.webhook_secret');
 
         if (is_string($configuredSecret) && trim($configuredSecret) !== '') {
-            $requestSecret = $request->header('X-Webhook-Secret', $request->header('X-OpenWA-Secret', ''));
-
-            if (! is_string($requestSecret) || ! hash_equals($configuredSecret, $requestSecret)) {
+            if (! $this->hasValidWebhookSecret($request, $configuredSecret)) {
                 return response()->json(['message' => 'Forbidden'], 403);
             }
+        } elseif (config('openwa.require_webhook_secret')) {
+            Log::critical('OpenWA webhook rejected because OPENWA_WEBHOOK_SECRET is not configured.');
+
+            return response()->json(['message' => 'Webhook secret is not configured'], 503);
         }
 
         // Local/dev environments may omit OPENWA_WEBHOOK_SECRET until OpenWA is wired.
@@ -69,6 +71,27 @@ class OpenWaMessageWebhookController extends Controller
             'status' => 'stored',
             'message_id' => $message->id,
         ]);
+    }
+
+    private function hasValidWebhookSecret(Request $request, string $configuredSecret): bool
+    {
+        $configuredSecret = trim($configuredSecret);
+        $requestSecret = $request->header('X-Webhook-Secret', $request->header('X-OpenWA-Secret', ''));
+
+        if (is_string($requestSecret) && hash_equals($configuredSecret, $requestSecret)) {
+            return true;
+        }
+
+        $signature = $request->header('X-OpenWA-Signature', '');
+
+        if (! is_string($signature) || trim($signature) === '') {
+            return false;
+        }
+
+        $expectedHash = hash_hmac('sha256', $request->getContent(), $configuredSecret);
+        $expectedSignature = 'sha256='.$expectedHash;
+
+        return hash_equals($expectedSignature, $signature) || hash_equals($expectedHash, $signature);
     }
 
     private function configuredReadySessionId(OpenWaClient $client): ?string
