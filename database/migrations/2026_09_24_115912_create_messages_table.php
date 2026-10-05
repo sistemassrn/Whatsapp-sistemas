@@ -48,9 +48,21 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('conversations', function (Blueprint $table) {
-            $table->dropForeign('conversations_last_message_id_foreign');
-        });
+        if (DB::connection()->getDriverName() === 'sqlsrv') {
+            DB::statement("
+                IF EXISTS (
+                    SELECT 1
+                    FROM sys.foreign_keys
+                    WHERE name = 'conversations_last_message_id_foreign'
+                )
+                ALTER TABLE conversations
+                DROP CONSTRAINT conversations_last_message_id_foreign
+            ");
+        } else {
+            Schema::table('conversations', function (Blueprint $table) {
+                $table->dropForeign('conversations_last_message_id_foreign');
+            });
+        }
 
         Schema::dropIfExists('messages');
     }
