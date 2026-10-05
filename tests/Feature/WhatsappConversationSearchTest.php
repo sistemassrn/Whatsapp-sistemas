@@ -52,6 +52,41 @@ it('filters conversations by chat search', function () {
         );
 });
 
+it('filters conversations by chat search case-insensitively', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $matchingContact = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+        'name' => 'leo',
+        'phone' => '5491111111111',
+    ]);
+
+    $matchingConversation = Conversation::query()->create([
+        'external_id' => '5491111111111@c.us',
+        'contact_id' => $matchingContact->id,
+        'title' => 'leo',
+        'last_message_at' => now(),
+    ]);
+
+    Conversation::query()->create([
+        'external_id' => '5492222222222@c.us',
+        'title' => 'Otro Cliente',
+        'last_message_at' => now()->subMinute(),
+    ]);
+
+    $this->get(route('whatsapp.conversations', ['chat_search' => 'LEO']))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->where('filters.chat_search', 'LEO')
+            ->has('conversations', 1)
+            ->where('conversations.0.external_id', $matchingConversation->external_id),
+        );
+});
+
 it('does not fetch a QR code when the OpenWA session is ready', function () {
     $this->withoutMiddleware(Authenticate::class);
     $this->withoutVite();
@@ -183,6 +218,52 @@ it('normalizes conversation display names without exposing raw chat identifiers'
             ->where('conversations.2.title', '5491188888888')
             ->where('conversations.3.external_id', $knownConversation->external_id)
             ->where('conversations.3.title', 'Cliente Guardado')
+        );
+});
+
+it('exposes a secondary conversation description without duplicating the title', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $unsavedContact = Contact::query()->create([
+        'external_id' => '5491199990000@c.us',
+        'push_name' => 'Leo',
+        'phone' => '5491199990000',
+    ]);
+
+    $unsavedConversation = Conversation::query()->create([
+        'external_id' => '5491199990000@c.us',
+        'contact_id' => $unsavedContact->id,
+        'title' => '5491199990000@c.us',
+        'last_message_at' => now(),
+    ]);
+
+    $savedContact = Contact::query()->create([
+        'external_id' => '5491188880000@c.us',
+        'name' => 'Leo',
+        'push_name' => 'Leo',
+        'phone' => '5491188880000',
+    ]);
+
+    $savedConversation = Conversation::query()->create([
+        'external_id' => '5491188880000@c.us',
+        'contact_id' => $savedContact->id,
+        'title' => 'Leo',
+        'last_message_at' => now()->subMinute(),
+    ]);
+
+    $this->get(route('whatsapp.conversations'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->where('conversations.0.external_id', $savedConversation->external_id)
+            ->where('conversations.0.title', 'Leo')
+            ->where('conversations.0.display_description', null)
+            ->where('conversations.1.external_id', $unsavedConversation->external_id)
+            ->where('conversations.1.title', '5491199990000')
+            ->where('conversations.1.display_description', 'Leo'),
         );
 });
 

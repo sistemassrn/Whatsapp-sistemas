@@ -117,12 +117,15 @@ class WhatsappConversationsController extends Controller
                 $latestMessage = $latestMessages->get($conversation->getAttribute('latest_message_id')) ?? $conversation->lastMessage;
                 $latestMessageAt = $latestMessage?->sent_at ?? $latestMessage?->received_at ?? $latestMessage?->created_at ?? $conversation->last_message_at;
 
+                $title = self::conversationDisplayName($conversation);
+
                 return [
                     'id' => $conversation->id,
                     'external_id' => $conversation->external_id,
                     'contact_id' => $conversation->contact_id,
-                    'title' => self::conversationDisplayName($conversation),
+                    'title' => $title,
                     'contact_name' => self::contactDisplayName($conversation),
+                    'display_description' => self::conversationDisplayDescription($conversation, $title),
                     'avatar_url' => $conversation->contact?->profile_photo_url,
                     'last_message_preview' => self::messagePreview($latestMessage),
                     'last_message_body' => $latestMessage?->body,
@@ -248,7 +251,7 @@ class WhatsappConversationsController extends Controller
 
     private static function likeSql(string $column): string
     {
-        return "{$column} LIKE ? ESCAPE '\\'";
+        return "LOWER({$column}) LIKE LOWER(?) ESCAPE '\\'";
     }
 
     private static function canMutateMessage(Message $message): bool
@@ -289,7 +292,6 @@ class WhatsappConversationsController extends Controller
     {
         foreach ([
             $conversation->contact?->name,
-            $conversation->contact?->push_name,
             $conversation->contact?->phone,
             $conversation->external_id,
             $conversation->contact?->external_id,
@@ -303,6 +305,19 @@ class WhatsappConversationsController extends Controller
         }
 
         return 'Contacto desconocido';
+    }
+
+    private static function conversationDisplayDescription(Conversation $conversation, string $title): ?string
+    {
+        foreach ([$conversation->contact?->name, $conversation->contact?->push_name] as $candidate) {
+            $description = self::cleanDisplayIdentifier($candidate);
+
+            if ($description !== null && strcasecmp($description, $title) !== 0) {
+                return $description;
+            }
+        }
+
+        return null;
     }
 
     private static function contactDisplayName(Conversation $conversation): ?string

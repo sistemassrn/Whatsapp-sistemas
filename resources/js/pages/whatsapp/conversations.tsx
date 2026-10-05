@@ -36,6 +36,7 @@ type ConversationItem = {
     contact_id: number | null;
     title: string | null;
     contact_name: string | null;
+    display_description: string | null;
     avatar_url: string | null;
     last_message_preview: string | null;
     last_message_body: string | null;
@@ -345,9 +346,11 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
 function ConversationRow({ conversation, active, filters }: { conversation: ConversationItem; active: boolean; filters: Props['filters'] }) {
     const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
+    const [avatarPreview, setAvatarPreview] = useState<ImagePreview | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
     const hasUnread = conversation.unread_count > 0 || conversation.marked_unread_at !== null;
+    const title = conversationTitle(conversation);
 
     useCloseOnOutsidePointer(menuRef, menuOpen, () => setMenuOpen(false));
 
@@ -436,27 +439,43 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
 
     return (
         <div className={`relative border-b border-(--app-border) transition-all ${active ? 'm-1 rounded-2xl bg-(--app-surface-strong)' : 'm-1 bg-(--app-surface) hover:rounded-2xl hover:bg-(--app-surface-strong)'}`}>
-            <a href={conversationHref(conversation.external_id, filters)} className="flex gap-3 px-4 py-3">
-                {avatarUrl ? (
-                    <img src={avatarUrl} alt="" className="size-11 shrink-0 rounded-full border border-(--app-border) object-cover" loading="lazy" />
-                ) : (
-                    <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) text-sm font-semibold text-(--app-text)">
-                        {initials(conversationTitle(conversation))}
-                    </div>
-                )}
+            <div className="flex gap-3 px-4 py-3">
+                <div className="shrink-0">
+                    {avatarUrl ? (
+                        <button
+                            type="button"
+                            onClick={() => setAvatarPreview({ id: conversation.id, url: avatarUrl, filename: `Foto de perfil de ${title}` })}
+                            className="app-focus-ring block rounded-full"
+                            title={`Ver foto de perfil de ${title}`}
+                            aria-label={`Ver foto de perfil de ${title}`}
+                        >
+                            <img src={avatarUrl} alt={`Foto de perfil de ${title}`} className="size-11 rounded-full border border-(--app-border) object-cover" loading="lazy" />
+                        </button>
+                    ) : (
+                        <div className="flex size-11 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) text-sm font-semibold text-(--app-text)">
+                            {initials(title)}
+                        </div>
+                    )}
+                </div>
 
-                <div className="min-w-0 flex-1 pr-14">
+                <a href={conversationHref(conversation.external_id, filters)} className="min-w-0 flex-1 pr-14">
                     <div className="flex items-start justify-between gap-3">
-                        <p className="truncate text-sm font-semibold">{conversationTitle(conversation)}</p>
+                        <p className="truncate text-sm font-semibold">{title}</p>
                         <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
                     </div>
+
+                    {/* {conversation.display_description ? (
+                        <p className="app-muted mt-0.5 truncate text-xs">
+                            {conversation.display_description}
+                        </p>
+                    ) : null} */}
 
                     <p className="app-muted mt-1 truncate text-sm">
                         {conversation.last_message_direction === 'outbound' ? 'Vos: ' : ''}
                         {conversation.last_message_preview ?? conversation.last_message_body ?? 'Sin vista previa'}
                     </p>
-                </div>
-            </a>
+                </a>
+            </div>
 
             <div className="absolute top-9 right-1 flex items-center gap-2">
                 <UnreadBadge hasUnread={hasUnread} />
@@ -484,8 +503,17 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
                         </div>
                     ) : null}
                 </div>
-                
             </div>
+            {avatarPreview ? (
+                <ImageViewerModal
+                    image={avatarPreview}
+                    positionLabel={null}
+                    canNavigate={false}
+                    onPrevious={() => undefined}
+                    onNext={() => undefined}
+                    onClose={() => setAvatarPreview(null)}
+                />
+            ) : null}
         </div>
     );
 }
@@ -830,6 +858,7 @@ function MessagePanel({
                 <div className="flex items-center justify-between gap-4">
                     <div>
                         <h2 className="text-lg font-semibold">{conversationTitle(conversation)}</h2>
+                        {conversation.display_description ? <p className="app-muted mt-0.5 truncate text-sm">{conversation.display_description}</p> : null}
                     </div>
 
                     <div className="flex items-center gap-3">
