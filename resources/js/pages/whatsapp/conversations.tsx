@@ -1,11 +1,13 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MoreVertical, Paperclip, Pencil, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MailOpen, MoreVertical, Paperclip, Pencil, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ThemeToggle } from '../../theme';
 
 const MESSAGE_LIMIT_INCREMENT = 50;
 const MAX_MESSAGE_LIMIT = 300;
+const COLLAPSED_MESSAGE_WORD_LIMIT = 80;
+const COLLAPSED_MESSAGE_CHAR_LIMIT = 520;
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 144;
 const MAX_FILES_PER_SEND = 3;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -77,6 +79,12 @@ type ImagePreview = {
     filename: string;
 };
 
+type UploadProgress = {
+    percentage?: number | null;
+};
+
+type MessageSubmitErrors = Partial<Record<'body' | 'media' | 'idempotency_key', string>> & Record<string, string>;
+
 type ConnectionState = {
     status: string;
     isReady: boolean;
@@ -114,6 +122,28 @@ type Props = {
 
 const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'selectedChatId'];
 const requestedAvatarContactIds = new Set<number>();
+
+function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null>, active: boolean, onClose: () => void) {
+    useEffect(() => {
+        if (!active) {
+            return;
+        }
+
+        const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+            const target = event.target;
+
+            if (!(target instanceof Node) || ref.current?.contains(target)) {
+                return;
+            }
+
+            onClose();
+        };
+
+        document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+
+        return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+    }, [active, onClose, ref]);
+}
 
 export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, firstUnreadMessageId, messages, emptyState, filters, flash }: Props) {
     const { auth } = usePage<Props>().props;
@@ -221,15 +251,15 @@ export default function Conversations({ operator, conversations, selectedChatId,
         <>
             <Head title="Chats" />
 
-            <main className="min-h-screen bg-zinc-950 text-white">
+            <main className="app-shell min-h-screen">
                 {/* <section className="mx-auto flex h-[calc(100vh-3rem)] w-full max-w-7xl overflow-hidden rounded-2xl border border-white/10 bg-zinc-950 shadow-2xl shadow-black/50"> */}
-                <section className="flex h-[calc(100vh-0rem)] w-full border border-white/10 bg-zinc-950">
-                    <aside className="flex w-full flex-col border-r border-white/10 bg-zinc-900 md:w-115 md:shrink-0">
-                        <div className="border-b border-white/10 bg-zinc-900 p-4">
+                <section className="app-chat-shell flex h-[calc(100vh-0rem)] w-full border border-(--app-border)">
+                    <aside className="app-surface flex w-full flex-col border-r md:w-115 md:shrink-0">
+                        <div className="app-surface border-b p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div>
-                                    <h1 className="text-xl font-semibold text-white">Chats</h1>
-                                    <p className="mt-1 text-xs text-zinc-400">
+                                    <h1 className="text-xl font-semibold">Chats</h1>
+                                    <p className="app-faint mt-1 text-xs">
                                         {operatorName}
                                     </p>
                                 </div>
@@ -240,7 +270,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                         <button
                                             type="submit"
                                             disabled={disconnectForm.processing}
-                                            className="rounded-lg border border-red-600 bg-zinc-900 px-3 py-2 text-xs font-semibold text-red-300 transition hover:border-red-700 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-60"
+                                            className="app-button-danger rounded-lg border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             Cerrar sesión
                                         </button>
@@ -249,7 +279,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                         <button
                                             type="submit"
                                             disabled={logoutForm.processing}
-                                            className="rounded-lg border border-zinc-500 bg-zinc-900 px-3 py-2 text-xs font-semibold text-white transition hover:border-white disabled:cursor-not-allowed disabled:opacity-60"
+                                            className="app-button rounded-lg border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
                                         >
                                             Salir
                                         </button>
@@ -277,7 +307,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
                         <div className="min-h-0 flex-1 overflow-y-auto">
                             {conversations.length === 0 ? (
-                                <p className="p-4 text-sm leading-6 text-zinc-400">
+                                <p className="app-muted p-4 text-sm leading-6">
                                     {emptyState ?? 'No hay conversaciones para mostrar todavía.'}
                                 </p>
                             ) : (
@@ -293,7 +323,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                         </div>
                     </aside>
 
-                    <section className="hidden min-w-0 flex-1 flex-col bg-zinc-950 md:flex" style={CHAT_BACKGROUND_STYLE}>
+                    <section className="app-chat-shell hidden min-w-0 flex-1 flex-col md:flex" style={CHAT_BACKGROUND_STYLE}>
                         {selectedConversation ? (
                             <MessagePanel
                                 conversation={selectedConversation}
@@ -316,7 +346,10 @@ export default function Conversations({ operator, conversations, selectedChatId,
 function ConversationRow({ conversation, active, filters }: { conversation: ConversationItem; active: boolean; filters: Props['filters'] }) {
     const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
     const [menuOpen, setMenuOpen] = useState(false);
+    const menuRef = useRef<HTMLDivElement>(null);
     const hasUnread = conversation.unread_count > 0 || conversation.marked_unread_at !== null;
+
+    useCloseOnOutsidePointer(menuRef, menuOpen, () => setMenuOpen(false));
 
     useEffect(() => {
         setAvatarUrl(conversation.avatar_url);
@@ -364,23 +397,23 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
     };
 
     return (
-        <div className={`relative border-b border-white/10 transition-all ${active ? 'm-1 rounded-2xl bg-zinc-800' : 'm-1 bg-zinc-900 hover:rounded-2xl hover:bg-zinc-800'}`}>
+        <div className={`relative border-b border-(--app-border) transition-all ${active ? 'm-1 rounded-2xl bg-(--app-surface-strong)' : 'm-1 bg-(--app-surface) hover:rounded-2xl hover:bg-(--app-surface-strong)'}`}>
             <a href={conversationHref(conversation.external_id, filters)} className="flex gap-3 px-4 py-3">
                 {avatarUrl ? (
-                    <img src={avatarUrl} alt="" className="size-11 shrink-0 rounded-full border border-white/10 object-cover" loading="lazy" />
+                    <img src={avatarUrl} alt="" className="size-11 shrink-0 rounded-full border border-(--app-border) object-cover" loading="lazy" />
                 ) : (
-                    <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-zinc-800 text-sm font-semibold text-zinc-200">
+                    <div className="flex size-11 shrink-0 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) text-sm font-semibold text-(--app-text)">
                         {initials(conversationTitle(conversation))}
                     </div>
                 )}
 
                 <div className="min-w-0 flex-1 pr-14">
                     <div className="flex items-start justify-between gap-3">
-                        <p className="truncate text-sm font-semibold text-white">{conversationTitle(conversation)}</p>
-                        <time className="shrink-0 text-[11px] text-zinc-500 absolute top-3 right-3">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
+                        <p className="truncate text-sm font-semibold">{conversationTitle(conversation)}</p>
+                        <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
                     </div>
 
-                    <p className="mt-1 truncate text-sm text-zinc-400">
+                    <p className="app-muted mt-1 truncate text-sm">
                         {conversation.last_message_direction === 'outbound' ? 'Vos: ' : ''}
                         {conversation.last_message_preview ?? conversation.last_message_body ?? 'Sin vista previa'}
                     </p>
@@ -389,11 +422,11 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
 
             <div className="absolute top-9 right-1 flex items-center gap-2">
                 <UnreadBadge hasUnread={hasUnread} />
-                <div className="relative">
+                <div ref={menuRef} className="relative">
                     <button
                         type="button"
                         onClick={() => setMenuOpen((current) => !current)}
-                        className="grid size-7 place-items-center rounded-full text-zinc-500 transition hover:bg-white/10 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00a884]"
+                        className="app-faint app-focus-ring grid size-7 place-items-center rounded-full transition hover:bg-(--app-control-hover) hover:text-(--app-accent)"
                         aria-label="Opciones de la conversación"
                         aria-expanded={menuOpen}
                         aria-haspopup="menu"
@@ -401,9 +434,10 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
                         <MoreVertical className="size-4" />
                     </button>
                     {menuOpen ? (
-                        <div className="app-menu absolute right-0 z-20 mt-2 w-44 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
-                            <button type="button" onClick={markConversationUnread} className="app-menu-item flex w-full items-center rounded-lg px-3 py-2 text-left" role="menuitem">
-                                Marcar como no leído
+                        <div className="app-menu absolute right-0 z-20 mt-2 w-40 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
+                            <button type="button" onClick={markConversationUnread} className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left" role="menuitem">
+                                <MailOpen className="size-4 text-(--app-accent)" />
+                                <span>Marcar no leído</span>
                             </button>
                         </div>
                     ) : null}
@@ -416,7 +450,7 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
 
 function UnreadBadge({ hasUnread }: { hasUnread: boolean }) {
     if (hasUnread) {
-        return <span className="size-2.5 shrink-0 rounded-full bg-[#00a884]" aria-label="Mensajes no leídos" />;
+        return <span className="size-2.5 shrink-0 rounded-full bg-(--app-accent)" aria-label="Mensajes no leídos" />;
     }
 
     return null;
@@ -451,7 +485,10 @@ function MessagePanel({
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
-    const { data, setData, post, processing, errors, clearErrors, progress } = useForm<{
+    const composerBodyRef = useRef('');
+    const composerMediaRef = useRef<File[]>([]);
+    const [sendProgress, setSendProgress] = useState<number | null>(null);
+    const { data, setData, errors, clearErrors, setError } = useForm<{
         body: string;
         media: File[];
         idempotency_key: string;
@@ -460,6 +497,11 @@ function MessagePanel({
         media: [],
         idempotency_key: generateIdempotencyKey(),
     });
+
+    useEffect(() => {
+        composerBodyRef.current = data.body;
+        composerMediaRef.current = data.media;
+    }, [data.body, data.media]);
 
     useEffect(() => {
         setMessageSearch('');
@@ -585,25 +627,63 @@ function MessagePanel({
     };
 
     const sendMessage = () => {
-        if (processing || (data.body.trim() === '' && data.media.length === 0)) {
+        const submittedBody = data.body;
+        const submittedMedia = data.media;
+        const submittedKey = data.idempotency_key;
+
+        if (submittedBody.trim() === '' && submittedMedia.length === 0) {
             return;
         }
 
-        post(`/whatsapp/conversations/${conversation.id}/messages`, {
+        clearErrors();
+        setSendProgress(null);
+        composerBodyRef.current = '';
+        composerMediaRef.current = [];
+        setData({
+            body: '',
+            media: [],
+            idempotency_key: generateIdempotencyKey(),
+        });
+
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+
+        router.post(`/whatsapp/conversations/${conversation.id}/messages`, {
+            body: submittedBody,
+            media: submittedMedia,
+            idempotency_key: submittedKey,
+        }, {
+            async: true,
             forceFormData: true,
             preserveScroll: true,
+            onProgress: (progress: UploadProgress) => {
+                if (submittedMedia.length === 0) {
+                    return;
+                }
+
+                setSendProgress(progress?.percentage ?? null);
+            },
             onSuccess: () => {
                 clearErrors();
-                setData({
-                    body: '',
-                    media: [],
-                    idempotency_key: generateIdempotencyKey(),
-                });
-
-                if (fileInputRef.current) {
-                    fileInputRef.current.value = '';
-                }
             },
+            onError: (submitErrors: MessageSubmitErrors) => {
+                setError(submitErrors);
+
+                if (composerBodyRef.current.trim() === '' && composerMediaRef.current.length === 0) {
+                    composerBodyRef.current = submittedBody;
+                    composerMediaRef.current = submittedMedia;
+                    setData({
+                        body: submittedBody,
+                        media: submittedMedia,
+                        idempotency_key: submittedKey,
+                    });
+                    return;
+                }
+
+                toast.error('No se pudo enviar el mensaje anterior. No reemplacé lo que estás escribiendo.');
+            },
+            onFinish: () => setSendProgress(null),
         });
     };
 
@@ -639,11 +719,15 @@ function MessagePanel({
         }
 
         clearErrors('media');
+        composerMediaRef.current = nextFiles;
         setData('media', nextFiles);
     };
 
     const removeFile = (index: number) => {
-        setData('media', data.media.filter((_, fileIndex) => fileIndex !== index));
+        const nextFiles = data.media.filter((_, fileIndex) => fileIndex !== index);
+
+        composerMediaRef.current = nextFiles;
+        setData('media', nextFiles);
 
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
@@ -700,10 +784,10 @@ function MessagePanel({
 
     return (
         <>
-            <header className="border-b border-white/10 bg-zinc-900 p-3 px-5">
+            <header className="app-surface border-b p-3 px-5">
                 <div className="flex items-center justify-between gap-4">
                     <div>
-                        <h2 className="text-lg font-semibold text-white">{conversationTitle(conversation)}</h2>
+                        <h2 className="text-lg font-semibold">{conversationTitle(conversation)}</h2>
                     </div>
 
                     <div className="flex items-center gap-3">
@@ -719,14 +803,14 @@ function MessagePanel({
                             actions={
                                 <>
                                     {normalizedMessageSearch !== '' ? (
-                                        <span className="text-xs text-zinc-500">
+                                        <span className="app-faint text-xs">
                                             {searchMatches.length === 0 ? '0' : `${activeMatchPosition + 1}/${searchMatches.length}`}
                                         </span>
                                     ) : null}
-                                    <button type="button" onClick={goToPreviousMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado anterior">
+                                    <button type="button" onClick={goToPreviousMatch} disabled={searchMatches.length === 0} className="app-muted rounded-md p-1 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado anterior">
                                         <ChevronUp className="size-4" />
                                     </button>
-                                    <button type="button" onClick={goToNextMatch} disabled={searchMatches.length === 0} className="rounded-md p-1 text-zinc-400 transition hover:bg-white/10 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado siguiente">
+                                    <button type="button" onClick={goToNextMatch} disabled={searchMatches.length === 0} className="app-muted rounded-md p-1 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado siguiente">
                                         <ChevronDown className="size-4" />
                                     </button>
                                 </>
@@ -756,17 +840,17 @@ function MessagePanel({
                     }
                 }}
                 onDrop={handleDrop}
-                className={`min-h-0 flex-1 overflow-y-auto bg-zinc-950 p-5 transition-all ${isDraggingFiles ? 'ring-2 ring-emerald-400/70 ring-inset rounded-xl' : ''}`}
+                className={`app-chat-shell min-h-0 flex-1 overflow-y-auto p-5 transition-all ${isDraggingFiles ? 'app-drag-active' : ''}`}
                 style={CHAT_BACKGROUND_STYLE}
             >
                 {messages.length === 0 ? (
-                    <p className="rounded-xl border border-white/10 bg-zinc-900 p-4 text-sm text-zinc-300">
+                    <p className="app-surface-soft rounded-xl border p-4 text-sm">
                         No hay mensajes para este chat.
                     </p>
                 ) : (
                     <div className="space-y-2">
                         {normalizedMessageSearch !== '' ? (
-                            <p className="text-center text-xs text-zinc-500">Buscá en los mensajes cargados.</p>
+                            <p className="app-faint text-center text-xs">Buscá en los mensajes cargados.</p>
                         ) : null}
                         {hasMoreMessages ? (
                             <div className="flex justify-center pb-2">
@@ -774,7 +858,7 @@ function MessagePanel({
                                     type="button"
                                     onClick={loadOlderMessages}
                                     disabled={isLoadingOlder}
-                                    className="rounded-full border border-white/10 bg-zinc-900 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:border-green-500 hover:text-green-300 disabled:cursor-not-allowed disabled:opacity-60"
+                                    className="app-button rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
                                 >
                                     {isLoadingOlder ? 'Cargando mensajes anteriores...' : 'Cargar mensajes anteriores'}
                                 </button>
@@ -799,7 +883,7 @@ function MessagePanel({
                 )}
             </div>
 
-            <footer className="m-3 rounded-b-3xl rounded-t-3xl border border-white/10 bg-zinc-900 p-1">
+            <footer className="app-surface m-3 rounded-b-3xl rounded-t-3xl border p-1">
                 <form onSubmit={submitMessage} className="space-y-2">
                     <input type="hidden" value={data.idempotency_key} readOnly />
                     <input
@@ -812,14 +896,14 @@ function MessagePanel({
                     {data.media.length > 0 ? (
                         <div className="ml-14 flex max-w-[75%] flex-wrap gap-2">
                             {data.media.map((file, index) => (
-                                <div key={`${file.name}-${file.size}-${index}`} className="flex max-w-full items-center gap-2 rounded-full bg-zinc-800 px-3 py-1 text-xs text-zinc-100">
+                                <div key={`${file.name}-${file.size}-${index}`} className="flex max-w-full items-center gap-2 rounded-full bg-(--app-surface-strong) px-3 py-1 text-xs">
                                     <Paperclip className="size-3.5 shrink-0" />
                                     <span className="truncate">{file.name}</span>
-                                    <span className="shrink-0 text-zinc-400">{formatBytes(file.size)}</span>
+                                    <span className="app-muted shrink-0">{formatBytes(file.size)}</span>
                                     <button
                                         type="button"
                                         onClick={() => removeFile(index)}
-                                        className="rounded-full p-0.3 text-zinc-100 transition hover:bg-white/10"
+                                        className="rounded-full p-0.3 transition hover:bg-(--app-control-hover)"
                                         aria-label="Quitar adjunto"
                                     >
                                         <X className="size-3.5" />
@@ -832,7 +916,7 @@ function MessagePanel({
                         <button
                             type="button"
                             onClick={() => fileInputRef.current?.click()}
-                            className="grid size-10 shrink-0 place-items-center rounded-full bg-[#00a884] text-white transition hover:bg-[#06cf9c]"
+                            className="app-button-primary grid size-10 shrink-0 place-items-center rounded-full transition"
                             aria-label="Adjuntar archivo"
                         >
                             <Paperclip className="size-4" />
@@ -840,33 +924,36 @@ function MessagePanel({
                         <label className="sr-only" htmlFor="message-body">
                             Mensaje
                         </label>
-                        <div className="app-input-shell flex min-h-10 flex-1 items-end">
+                        <div className="flex min-h-10 flex-1 items-end">
                             <textarea
                                 ref={textareaRef}
                                 id="message-body"
                                 value={data.body}
-                                onChange={(event) => setData('body', event.target.value)}
+                                onChange={(event) => {
+                                    composerBodyRef.current = event.target.value;
+                                    setData('body', event.target.value);
+                                }}
                                 onKeyDown={handleComposerKeyDown}
                                 onPaste={handlePaste}
                                 rows={1}
                                 maxLength={4000}
                                 placeholder={data.media.length > 0 ? 'Agregá un comentario' : 'Escribí un mensaje'}
-                                className="app-input-control max-h-36 min-h-10 flex-1 resize-none px-2 pt-3 pb-1.5 text-sm leading-5 outline-none transition placeholder:text-zinc-500"
+                                className=" max-h-36 min-h-10 flex-1 resize-none px-2 pt-3 pb-1.5 text-sm leading-5 outline-none transition"
                             />
                         </div>
                         <button
                             type="submit"
-                            disabled={processing || (data.body.trim() === '' && data.media.length === 0)}
-                            className="grid size-10 shrink-0 place-items-center rounded-full bg-[#00a884] text-white transition hover:bg-[#06cf9c] disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={data.body.trim() === '' && data.media.length === 0}
+                            className="app-button-primary grid size-10 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label="Enviar mensaje"
                         >
                             <Send className="size-4" />
                         </button>
                     </div>
-                    {data.media.length > 0 && progress ? <p className="ml-14 text-xs text-zinc-400">Subiendo archivos… {progress.percentage}%</p> : null}
-                    {errors.body ? <p className="mt-2 text-sm text-red-600">{errors.body}</p> : null}
-                    {errors.media ? <p className="mt-2 text-sm text-red-600">{errors.media}</p> : null}
-                    {errors.idempotency_key ? <p className="mt-2 text-sm text-red-600">{errors.idempotency_key}</p> : null}
+                    {sendProgress !== null ? <p className="app-muted ml-14 text-xs">Subiendo archivos… {sendProgress}%</p> : null}
+                    {errors.body ? <p className="mt-2 text-sm text-(--app-danger)">{errors.body}</p> : null}
+                    {errors.media ? <p className="mt-2 text-sm text-(--app-danger)">{errors.media}</p> : null}
+                    {errors.idempotency_key ? <p className="mt-2 text-sm text-(--app-danger)">{errors.idempotency_key}</p> : null}
                 </form>
             </footer>
             {imagePreview ? (
@@ -886,11 +973,11 @@ function MessagePanel({
 function UnreadDivider({ text }: { text: string }) {
     return (
         <div className="my-3 flex items-center gap-3" role="separator" aria-label={text}>
-            <span className="h-px flex-1 bg-[#00a884]/30" />
-            <span className="rounded-full border border-[#00a884]/30 bg-zinc-900/90 px-3 py-1 text-[11px] font-semibold text-[#007a63] shadow-sm">
+            <span className="app-accent-line h-px flex-1" />
+            <span className="app-unread-chip rounded-full border px-3 py-1 text-[11px] font-semibold shadow-sm">
                 {text}
             </span>
-            <span className="h-px flex-1 bg-[#00a884]/30" />
+            <span className="app-accent-line h-px flex-1" />
         </div>
     );
 }
@@ -898,12 +985,16 @@ function UnreadDivider({ text }: { text: string }) {
 function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, refCallback }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void; searchQuery: string; activeSearchMatch: boolean; refCallback: (element: HTMLElement | null) => void }) {
     const fromMe = message.direction === 'outbound';
     const timestamp = message.sent_at ?? message.received_at ?? message.created_at;
+    const bubbleRef = useRef<HTMLDivElement>(null);
     const [actionsOpen, setActionsOpen] = useState(false);
     const [actionMode, setActionMode] = useState<'list' | 'edit' | 'delete'>('list');
     const [editBody, setEditBody] = useState(message.body ?? '');
     const [processingMutation, setProcessingMutation] = useState(false);
+    const [messageExpanded, setMessageExpanded] = useState(false);
     const deleted = message.deleted_at !== null;
     const canShowMenu = !deleted && (message.can_edit || message.can_delete);
+
+    useCloseOnOutsidePointer(bubbleRef, actionsOpen, () => closeActions());
 
     useEffect(() => {
         if (actionMode !== 'edit') {
@@ -954,8 +1045,14 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
     };
 
     return (
-        <article className={`flex ${fromMe ? 'justify-end' : 'justify-start'}`}>
-            <div ref={refCallback} className={`group relative max-w-[70%] rounded-xl border px-3 py-2 shadow-sm transition ${ fromMe ? 'border-emerald-700/60 bg-emerald-800/70' : 'border-white/10 bg-zinc-900'}`}>
+        <article className={`flex min-w-0 ${fromMe ? 'justify-end' : 'justify-start'}`}>
+            <div
+                ref={(element) => {
+                    bubbleRef.current = element;
+                    refCallback(element);
+                }}
+                className={`app-message-bubble group relative min-w-0 max-w-[70%] overflow-visible rounded-xl border px-3 py-2 shadow-sm transition ${fromMe ? 'app-message-bubble-out' : ''}`}
+            >
                 {canShowMenu ? (
                     <div className="absolute top-1 right-1">
                         <button
@@ -964,7 +1061,7 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                                 setActionsOpen(true);
                                 setActionMode('list');
                             }}
-                            className="grid size-7 place-items-center rounded-full text-zinc-400 opacity-70 transition hover:bg-white/10 hover:text-white hover:opacity-100 group-hover:opacity-100"
+                            className="app-muted grid size-7 place-items-center rounded-full opacity-70 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) hover:opacity-100 group-hover:opacity-100"
                             aria-label="Opciones del mensaje"
                         >
                             <MoreVertical className="size-4" />
@@ -973,33 +1070,37 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                 ) : null}
 
                 {deleted ? (
-                    <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-zinc-400 italic">Mensaje eliminado</p>
+                    <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">Mensaje eliminado</p>
                 ) : (
                     <>
                 <MessageMedia message={message} onOpenImage={onOpenImage} />
                         {message.body ? (
-                            <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-white">
-                                {activeSearchMatch ? <HighlightedText text={message.body} query={searchQuery} /> : message.body}
-                            </p>
+                            <MessageBody
+                                text={message.body}
+                                searchQuery={searchQuery}
+                                activeSearchMatch={activeSearchMatch}
+                                expanded={messageExpanded}
+                                onToggleExpanded={() => setMessageExpanded((current) => !current)}
+                            />
                         ) : message.type === 'text' ? (
-                            <p className="whitespace-pre-wrap pr-6 text-sm leading-6 text-zinc-400 italic">Mensaje sin contenido</p>
+                            <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">Mensaje sin contenido</p>
                         ) : null}
                     </>
                 )}
-                <p className="mt-1 text-right text-[11px] text-zinc-400">
+                <p className="app-muted mt-1 text-right text-[11px]">
                     {formatWhatsAppTimestamp(timestamp)} · {translateStatus(message.status)}
                     {message.edited_at && !deleted ? ' · Editado' : ''}
                 </p>
                 {message.status === 'failed' && message.error_message ? (
-                    <p className="mt-1 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1 text-xs leading-5 text-red-200">
+                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">
                         {message.error_message}
                     </p>
                 ) : null}
                 {message.remote_edit_status === 'failed' && message.edit_error ? (
-                    <p className="mt-1 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1 text-xs leading-5 text-red-200">Edición fallida: {message.edit_error}</p>
+                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">Edición fallida: {message.edit_error}</p>
                 ) : null}
                 {message.remote_delete_status === 'failed' && message.delete_error ? (
-                    <p className="mt-1 rounded-lg border border-red-500/30 bg-red-950/40 px-2 py-1 text-xs leading-5 text-red-200">Eliminación fallida: {message.delete_error}</p>
+                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">Eliminación fallida: {message.delete_error}</p>
                 ) : null}
                 {actionsOpen ? (
                     <MessageActionsPanel
@@ -1016,6 +1117,28 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                 ) : null}
             </div>
         </article>
+    );
+}
+
+function MessageBody({ text, searchQuery, activeSearchMatch, expanded, onToggleExpanded }: { text: string; searchQuery: string; activeSearchMatch: boolean; expanded: boolean; onToggleExpanded: () => void }) {
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    const shouldTruncate = !activeSearchMatch && (words.length > COLLAPSED_MESSAGE_WORD_LIMIT || text.length > COLLAPSED_MESSAGE_CHAR_LIMIT);
+
+    return (
+        <div className="pr-6">
+            <p className={`app-message-text text-sm leading-6 ${shouldTruncate && !expanded ? 'app-message-text-collapsed' : ''}`}>
+                {activeSearchMatch ? <HighlightedText text={text} query={searchQuery} /> : text}
+            </p>
+            {shouldTruncate ? (
+                <button
+                    type="button"
+                    onClick={onToggleExpanded}
+                    className="app-read-more mt-1 text-xs font-semibold transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--app-focus) focus-visible:ring-offset-2 focus-visible:ring-offset-(--app-chat-in)"
+                >
+                    {expanded ? 'Leer menos' : 'Leer más'}
+                </button>
+            ) : null}
+        </div>
     );
 }
 
@@ -1042,10 +1165,10 @@ function MessageActionsPanel({
 }) {
     return (
         <div className="absolute right-1 bottom-[calc(100%+0.5rem)] z-20 w-60 max-w-[calc(100vw-2rem)]" role="dialog" aria-label="Opciones del mensaje">
-            <div className="rounded-2xl border border-white/10 bg-zinc-900 p-2 text-sm text-white shadow-2xl shadow-black/50">
+            <div className="app-surface rounded-2xl border p-2 text-sm shadow-2xl shadow-black/20">
                 <div className="mb-3 flex items-center justify-between gap-3">
                     <h3 className="font-semibold pl-1">Opciones del mensaje</h3>
-                    <button type="button" onClick={onClose} className="grid size-8 place-items-center rounded-full text-zinc-400 transition hover:bg-white/10 hover:text-white" aria-label="Cerrar opciones">
+                    <button type="button" onClick={onClose} className="app-muted grid size-8 place-items-center rounded-full transition hover:bg-(--app-control-hover) hover:text-(--app-accent)" aria-label="Cerrar opciones">
                         <X className="size-4" />
                     </button>
                 </div>
@@ -1053,13 +1176,13 @@ function MessageActionsPanel({
                 {mode === 'list' ? (
                     <div className="space-y-1">
                         {message.can_edit ? (
-                            <button type="button" onClick={() => onModeChange('edit')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-zinc-100 transition hover:bg-zinc-800">
-                                <Pencil className="size-3 text-emerald-300" />
+                            <button type="button" onClick={() => onModeChange('edit')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-(--app-control-hover)">
+                                <Pencil className="size-3 text-(--app-accent)" />
                                 <span>Editar</span>
                             </button>
                         ) : null}
                         {message.can_delete ? (
-                            <button type="button" onClick={() => onModeChange('delete')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-red-200 transition hover:bg-red-950/40">
+                            <button type="button" onClick={() => onModeChange('delete')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-(--app-danger) transition hover:bg-(--app-danger-bg)">
                                 <Trash2 className="size-3" />
                                 <span>Eliminar</span>
                             </button>
@@ -1074,14 +1197,14 @@ function MessageActionsPanel({
                             onChange={(event) => onEditBodyChange(event.target.value)}
                             maxLength={4000}
                             rows={5}
-                            className="app-input-control h-32 w-full resize-none rounded-xl border border-emerald-700/60 px-3 py-2 text-sm outline-none focus:border-[#00a884]"
+                            className="app-input-control h-32 w-full resize-none rounded-xl border border-(--app-control-border) px-3 py-2 text-sm outline-none focus:border-(--app-focus)"
                         />
                         <div className="flex justify-end gap-2 text-xs font-semibold items-center">
-                            <p className="text-right text-xs text-zinc-500">{editBody.length}/2000</p>
-                            <button type="button" onClick={() => onModeChange('list')} className="rounded-full px-2 py-1 text-zinc-300 transition hover:bg-white/10">
+                            <p className="app-faint text-right text-xs">{editBody.length}/2000</p>
+                            <button type="button" onClick={() => onModeChange('list')} className="app-muted rounded-full px-2 py-1 transition hover:bg-(--app-control-hover)">
                                 Cancelar
                             </button>
-                            <button type="submit" disabled={processing || editBody.trim() === ''} className="rounded-full bg-[#00a884] px-2 py-1 text-white transition hover:bg-[#06cf9c] disabled:opacity-50">
+                            <button type="submit" disabled={processing || editBody.trim() === ''} className="app-button-primary rounded-full px-2 py-1 transition disabled:opacity-50">
                                 Guardar
                             </button>
                         </div>
@@ -1089,13 +1212,13 @@ function MessageActionsPanel({
                 ) : null}
 
                 {mode === 'delete' ? (
-                    <div className="space-y-4 rounded-xl border border-red-500/30 bg-red-950/30 p-4">
-                        <p className="text-sm text-red-100">¿Eliminar este mensaje?</p>
+                    <div className="app-alert-danger space-y-4 rounded-xl border p-4">
+                        <p className="text-sm">¿Eliminar este mensaje?</p>
                         <div className="flex justify-end gap-2 text-xs font-semibold">
-                            <button type="button" onClick={() => onModeChange('list')} className="rounded-full px-2 py-1 text-zinc-300 transition hover:bg-white/10">
+                            <button type="button" onClick={() => onModeChange('list')} className="rounded-full px-2 py-1 transition hover:bg-(--app-control-hover)">
                                 Cancelar
                             </button>
-                            <button type="button" onClick={onDelete} disabled={processing} className="rounded-full bg-red-600 px-2 py-1 text-white transition hover:bg-red-700 disabled:opacity-50">
+                            <button type="button" onClick={onDelete} disabled={processing} className="rounded-full bg-(--app-danger) px-2 py-1 text-white transition disabled:opacity-50">
                                 Eliminar
                             </button>
                         </div>
@@ -1132,9 +1255,9 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
         const mediaError = message.media_error ?? unavailableMediaLabel(message.type);
 
         return (
-            <div className="mb-1 rounded-lg bg-white/10 px-3 py-2 text-sm text-zinc-200">
+            <div className="app-surface-soft mb-1 rounded-lg border px-3 py-2 text-sm">
                 <p>{mediaError ?? mediaLabel(message.type)}</p>
-                <p className="mt-0.5 text-xs text-zinc-400">Estado: {status}</p>
+                <p className="app-muted mt-0.5 text-xs">Estado: {status}</p>
             </div>
         );
     }
@@ -1169,10 +1292,10 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
     }
 
     return (
-        <a href={message.media_url} target="_blank" rel="noreferrer" className="mb-2 flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-zinc-100 transition hover:bg-white/15">
+        <a href={message.media_url} target="_blank" rel="noreferrer" className="app-surface-soft mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition hover:bg-(--app-control-hover)">
             <Paperclip className="size-4" />
             <span className="truncate">{message.media_filename ?? 'Documento adjunto'}</span>
-            {message.media_size_bytes ? <span className="shrink-0 text-xs text-zinc-400">{formatBytes(message.media_size_bytes)}</span> : null}
+            {message.media_size_bytes ? <span className="app-muted shrink-0 text-xs">{formatBytes(message.media_size_bytes)}</span> : null}
         </a>
     );
 }
@@ -1311,8 +1434,8 @@ function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNex
 function EmptyConversation() {
     return (
         <div className="grid h-full place-items-center p-8 text-center" style={CHAT_BACKGROUND_STYLE}>
-            <div className="max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-8">
-                <p className="text-sm leading-6 text-zinc-200">
+            <div className="app-surface-soft max-w-md rounded-2xl border p-8">
+                <p className="text-sm leading-6">
                     Elegí un chat para ver los mensajes.
                 </p>
             </div>
@@ -1345,16 +1468,16 @@ function SearchForm({
             }}
             className={`app-input-shell flex items-center gap-2 rounded-xl border px-3 py-2 ${className}`}
         >
-            <Search className="size-4 text-zinc-500" />
+            <Search className="app-faint size-4" />
             <input
                 type="search"
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
                 placeholder={placeholder}
-                className="w-full bg-transparent text-sm text-(--app-control-text) outline-none placeholder:text-zinc-500"
+                className="w-full bg-transparent text-sm text-(--app-control-text) outline-none placeholder:text-(--app-faint)"
             />
             {value.trim() !== '' ? (
-                <button type="button" onClick={onClear} className="text-xs font-medium text-zinc-400 transition hover:text-green-300">
+                <button type="button" onClick={onClear} className="app-muted text-xs font-medium transition hover:text-(--app-accent)">
                     Limpiar
                 </button>
             ) : null}

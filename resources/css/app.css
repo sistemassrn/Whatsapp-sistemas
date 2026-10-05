@@ -21,42 +21,73 @@
 @layer base {
     :root {
         color-scheme: dark;
-        --chat-background-overlay: rgba(9, 9, 11, 0.8);
-        --app-bg: rgb(9 9 11);
-        --app-surface: rgb(24 24 27);
-        --app-surface-strong: rgb(39 39 42);
-        --app-surface-soft: rgb(24 24 27 / 0.7);
+        --app-bg: #070a0c;
+        --app-surface: #12181b;
+        --app-surface-raised: #182125;
+        --app-surface-strong: #202b30;
+        --app-surface-soft: rgb(18 24 27 / 0.78);
         --app-border: rgb(255 255 255 / 0.1);
-        --app-text: rgb(250 250 250);
-        --app-muted: rgb(161 161 170);
-        --app-faint: rgb(113 113 122);
-        --app-control-bg: rgb(24, 24, 27);
-        --app-control-text: rgb(244 244 245);
-        --app-control-border: rgb(63 63 70);
-        --app-control-hover: rgb(39 39 42);
-        --app-accent: rgb(0 168 132);
+        --app-text: #f4f7f5;
+        --app-muted: #a7b0ad;
+        --app-faint: #77817e;
+        --app-accent: #00a884;
+        --app-accent-strong: #06cf9c;
+        --app-accent-contrast: #ffffff;
+        --app-danger: #f87171;
+        --app-danger-bg: rgb(127 29 29 / 0.38);
+        --app-danger-border: rgb(248 113 113 / 0.35);
+        --app-success: #86efac;
+        --app-success-bg: rgb(20 83 45 / 0.36);
+        --app-success-border: rgb(74 222 128 / 0.32);
+        --app-chat-in: #192126;
+        --app-chat-out: #075e54;
+        --app-chat-out-border: rgb(0 168 132 / 0.45);
+        --app-chat-bg: #0b1113;
+        --app-focus: #00a884;
+        --app-control-bg: var(--app-surface);
+        --app-control-text: var(--app-text);
+        --app-control-border: rgb(255 255 255 / 0.14);
+        --app-control-hover: var(--app-surface-strong);
+        --chat-background-overlay: rgba(7, 10, 12, 0.78);
     }
 
     :root[data-theme='light'] {
         color-scheme: light;
-        --chat-background-overlay: rgba(250, 250, 250, 0.74);
-        --app-bg: rgb(250 250 250);
-        --app-surface: rgb(255 255 255);
-        --app-surface-strong: rgb(244 244 245);
-        --app-surface-soft: rgb(255 255 255 / 0.82);
-        --app-border: rgb(212 212 216);
-        --app-text: rgb(24 24 27);
-        --app-muted: rgb(63 63 70);
-        --app-faint: rgb(82 82 91);
-        --app-control-bg: rgb(255 255 255);
-        --app-control-text: rgb(24 24 27);
-        --app-control-border: rgb(161 161 170);
-        --app-control-hover: rgb(244 244 245);
-        --app-accent: rgb(0 128 105);
+        --app-bg: #ffffff;
+        /* --app-bg: #f3f5f2; */
+        --app-surface: #ffffff;
+        --app-surface-raised: #fbfcfa;
+        --app-surface-strong: #e9eee9;
+        --app-surface-soft: rgb(255 255 255 / 0.86);
+        --app-border: #d9e0da;
+        --app-text: #17201c;
+        --app-muted: #55615d;
+        --app-faint: #6d7773;
+        --app-accent: #008069;
+        --app-accent-strong: #00a884;
+        --app-accent-contrast: #ffffff;
+        --app-danger: #b91c1c;
+        --app-danger-bg: #fff1f2;
+        --app-danger-border: #fecdd3;
+        --app-success: #166534;
+        --app-success-bg: #ecfdf3;
+        --app-success-border: #bbf7d0;
+        --app-chat-in: #ffffff;
+        --app-chat-out: rgb(209, 240, 204);
+        --app-chat-out-border: #b7efad;
+        --app-chat-bg: #efeae2;
+        --app-focus: #008069;
+        --app-control-bg: var(--app-surface);
+        --app-control-text: var(--app-text);
+        --app-control-border: #c9d2cc;
+        --app-control-hover: var(--app-surface-strong);
+        --chat-background-overlay: rgba(255, 255, 255, 0.881);
     }
 
     body {
-        @apply bg-black font-sans text-zinc-100 antialiased;
+        background-color: var(--app-bg);
+        color: var(--app-text);
+        @apply font-sans antialiased;
     }
 
     * {
@@ -91,6 +122,156 @@
 }
 
 @layer components {
+    .app-shell {
+        background-color: var(--app-bg);
+        color: var(--app-text);
+    }
+
+    .app-chat-shell {
+        background-color: var(--app-chat-bg);
+        color: var(--app-text);
+    }
+
+    .app-surface {
+        border-color: var(--app-border);
+        background-color: var(--app-surface);
+        color: var(--app-text);
+    }
+
+    .app-surface-raised {
+        border-color: var(--app-border);
+        background-color: var(--app-surface-raised);
+        color: var(--app-text);
+    }
+
+    .app-surface-soft {
+        border-color: var(--app-border);
+        background-color: var(--app-surface-soft);
+        color: var(--app-text);
+    }
+
+    .app-muted {
+        color: var(--app-muted);
+    }
+
+    .app-faint {
+        color: var(--app-faint);
+    }
+
+    .app-focus-ring {
+        outline: 2px solid transparent;
+        outline-offset: 2px;
+    }
+
+    .app-focus-ring:focus-visible {
+        outline-color: var(--app-focus);
+    }
+
+    .app-button {
+        border-color: var(--app-control-border);
+        background-color: var(--app-control-bg);
+        color: var(--app-control-text);
+    }
+
+    .app-button:hover:not(:disabled) {
+        border-color: var(--app-accent);
+        background-color: var(--app-control-hover);
+        color: var(--app-accent);
+    }
+
+    .app-button-primary {
+        border-color: var(--app-accent);
+        background-color: var(--app-accent);
+        color: var(--app-accent-contrast);
+    }
+
+    .app-button-primary:hover:not(:disabled) {
+        border-color: var(--app-accent-strong);
+        background-color: var(--app-accent-strong);
+        color: var(--app-accent-contrast);
+    }
+
+    .app-button-danger {
+        border-color: var(--app-danger-border);
+        background-color: transparent;
+        color: var(--app-danger);
+    }
+
+    .app-button-danger:hover:not(:disabled) {
+        background-color: var(--app-danger-bg);
+        color: var(--app-danger);
+    }
+
+    .app-alert-success {
+        border-color: var(--app-success-border);
+        background-color: var(--app-success-bg);
+        color: var(--app-success);
+    }
+
+    .app-alert-danger {
+        border-color: var(--app-danger-border);
+        background-color: var(--app-danger-bg);
+        color: var(--app-danger);
+    }
+
+    .app-status-card {
+        border-color: var(--app-border);
+        background-color: var(--app-surface-raised);
+    }
+
+    .app-message-bubble {
+        border-color: var(--app-border);
+        background-color: var(--app-chat-in);
+        color: var(--app-text);
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .app-message-text {
+        min-width: 0;
+        max-width: 100%;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+    }
+
+    .app-message-text-collapsed {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 7;
+        overflow: hidden;
+    }
+
+    .app-message-bubble img,
+    .app-message-bubble video,
+    .app-message-bubble a {
+        max-width: 100%;
+    }
+
+    .app-message-bubble-out {
+        border-color: var(--app-chat-out-border);
+        background-color: var(--app-chat-out);
+    }
+
+    .app-read-more {
+        color: var(--app-accent);
+    }
+
+    .app-accent-line {
+        background-color: color-mix(in srgb, var(--app-accent) 30%, transparent);
+    }
+
+    .app-unread-chip {
+        border-color: color-mix(in srgb, var(--app-accent) 30%, transparent);
+        background-color: var(--app-surface-soft);
+        color: var(--app-accent);
+    }
+
+    .app-drag-active {
+        border-radius: 0.75rem;
+        box-shadow: inset 0 0 0 2px var(--app-accent);
+    }
+
     .theme-toggle {
         border-color: var(--app-control-border);
         background-color: var(--app-control-bg);
@@ -124,11 +305,21 @@
         border-color: var(--app-border);
         background-color: var(--app-control-bg);
         color: var(--app-control-text);
+        border-radius: 0.75rem;
+        border-width: 1px;
+    }
+
+    .app-input-shell:focus-within {
+        border-color: var(--app-focus);
     }
 
     .app-input-control {
         background-color: var(--app-control-bg);
         color: var(--app-control-text);
+    }
+
+    .app-input-control::placeholder {
+        color: var(--app-faint);
     }
 
     .app-search-highlight {

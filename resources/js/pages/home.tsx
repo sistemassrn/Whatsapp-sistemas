@@ -27,15 +27,15 @@ export default function Home() {
         <>
             <Head title="Iniciar sesión" />
 
-            <main className="relative flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-9 py-9 text-white">
+            <main className="app-shell relative flex min-h-screen flex-col items-center justify-center px-9 py-9">
                 <ThemeToggle className="absolute top-5 right-5" />
                 <img src="/logo-srn.png" alt="SRN" className="flex mb-5 h-16 w-auto object-contain" />
                 {/* <img src="/logo-srn.png" alt="SRN" className="mx-auto mb-5 h-16 w-auto object-contain" /> */}
-                <section className="w-full max-w-md rounded-2xl border border-white/10 bg-zinc-900 p-6">
-                    <h1 className="text-2xl font-normal tracking-tight text-white">
+                <section className="app-surface w-full max-w-md rounded-2xl border p-6">
+                    <h1 className="text-2xl font-normal tracking-tight">
                         Iniciar sesión
                     </h1>
-                    <p className="my-4 text-base text-zinc-300">
+                    <p className="app-muted my-4 text-base">
                         Accedé con tus datos de NexoSRN.
                     </p>
 
@@ -43,7 +43,7 @@ export default function Home() {
                         <div>
                             <label
                                 htmlFor="usuario"
-                                className="text-base font-light text-zinc-200"
+                                className="text-base font-light"
                             >
                                 Usuario
                             </label>
@@ -56,12 +56,12 @@ export default function Home() {
                                 onChange={(event) =>
                                     setData('usuario', event.target.value)
                                 }
-                                className={`mt-2 h-9.5 w-full rounded-lg border bg-zinc-950 px-4 text-sm text-white outline-none transition placeholder:text-zinc-500 focus:border-green-400 ${errors.usuario ? 'border-red-400' : 'border-zinc-700'}`}
+                                className={`app-input-control mt-2 h-9.5 w-full rounded-xl border px-4 text-sm outline-none transition ${errors.usuario ? 'border-(--app-danger)' : 'border-(--app-control-border) focus:border-(--app-focus)'}`}
                                 autoComplete="username"
                             />
 
                             {errors.usuario && (
-                                <p className="mt-2 text-sm text-red-600">
+                                <p className="mt-2 text-sm text-(--app-danger)">
                                     {errors.usuario}
                                 </p>
                             )}
@@ -70,12 +70,12 @@ export default function Home() {
                         <div>
                             <label
                                 htmlFor="password"
-                                className="text-base font-light text-zinc-200"
+                                className="text-base font-light"
                             >
                                 Contraseña
                             </label>
 
-                            <div className={`mt-2 flex h-9.5 items-center rounded-lg border bg-zinc-950 px-4 text-sm text-white transition focus-within:border-green-400 ${errors.password ? 'border-red-400' : 'border-zinc-700'}`}>
+                            <div className={`app-input-shell mt-2 flex h-9.5 items-center px-4 text-sm transition ${errors.password ? 'border-(--app-danger)' : ''}`}>
                                 <input
                                     id="password"
                                     name="password"
@@ -84,13 +84,13 @@ export default function Home() {
                                     onChange={(event) =>
                                         setData('password', event.target.value)
                                     }
-                                    className="min-w-0 flex-1 bg-transparent text-white outline-none"
+                                    className="min-w-0 flex-1 bg-transparent text-(--app-control-text) outline-none"
                                     autoComplete="current-password"
                                 />
                                 <button
                                     type="button"
                                     onClick={() => setShowPassword((current) => !current)}
-                                    className="ml-3 text-zinc-400 transition hover:text-white"
+                                    className="app-faint ml-3 transition hover:text-(--app-accent)"
                                     aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                                 >
                                     {showPassword ? <Eye className="size-5" /> : <EyeOff className="size-5" />}
@@ -98,7 +98,7 @@ export default function Home() {
                             </div>
 
                             {errors.password && (
-                                <p className="mt-2 text-sm text-red-600">
+                                <p className="mt-2 text-sm text-(--app-danger)">
                                     {errors.password}
                                 </p>
                             )}
@@ -107,7 +107,7 @@ export default function Home() {
                         <button
                             type="submit"
                             disabled={processing}
-                            className="mt-4! w-full rounded-lg border border-[#008069] bg-[#00a884] px-4 py-1.5 text-md font-semibold text-white transition hover:bg-[#008069] disabled:cursor-not-allowed disabled:opacity-60"
+                            className="app-button-primary mt-4! w-full rounded-xl border px-4 py-1.5 text-md font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             {processing ? 'Ingresando...' : 'Ingresar'}
                         </button>

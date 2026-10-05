@@ -109,13 +109,12 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
         <>
             <Head title="Escanear QR" />
 
-            <main className="flex min-h-screen items-center justify-center bg-zinc-950 px-6 py-12 text-white">
+            <main className="app-shell flex min-h-screen items-center justify-center px-6 py-12">
                 <ThemeToggle className="absolute top-5 right-5" />
-                <section className="mx-auto w-full max-w-5xl rounded-3xl border border-white/10 bg-zinc-900 p-6 sm:p-8">
+                <section className="app-surface mx-auto w-full max-w-5xl rounded-3xl border p-6 sm:p-8">
                     <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-start">
                         <div className="flex min-h-full flex-col">
-                            <dl className="grid gap-4 rounded-2xl border border-white/10 bg-zinc-900 p-5 sm:grid-cols-2">
-                                <Status label="Estado actual" value={humanStatus(sessionStatus)} />
+                            <dl className="app-surface-soft grid gap-4 rounded-2xl border p-5 sm:grid-cols-2">
                                 <Status
                                     label="Operador"
                                     value={operator?.name ?? "Operador demo"}
@@ -128,6 +127,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                     label="Nro. operador"
                                     value={operator?.ope_datatech ?? "Nro. operador demo"}
                                 />
+                                <Status label="Estado actual" value={humanStatus(sessionStatus)} />
                                 <Status label="Servicio" value={healthStatus} />
                                 <Status
                                     label="Última consulta"
@@ -135,14 +135,14 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                 />
                             </dl>
 
-                            <div className="mt-6 rounded-2xl border border-white/10 bg-zinc-900/70 p-5 text-sm leading-6 text-zinc-200">
+                            <div className="app-surface-soft app-muted mt-6 rounded-2xl border p-5 text-sm leading-6">
                                 <p>
                                     Escaneá el código cuando aparezca. Si no aparece, apretá en "Cerrar WhatsApp" e intentá de nuevo en unos segundos.
                                 </p>
                             </div>
 
                             {openwa.isReady && (
-                                <div className="mt-6 rounded-2xl border border-green-500/30 bg-green-950/40 p-5 text-sm leading-6 text-green-200">
+                                <div className="app-alert-success mt-6 rounded-2xl border p-5 text-sm leading-6">
                                     WhatsApp está conectado. El QR ya no es necesario y podés consultar conversaciones.
                                 </div>
                             )}
@@ -165,7 +165,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                         <button
                                             type="submit"
                                             disabled={disconnectForm.processing}
-                                            className="w-full rounded-xl border border-red-500 px-4 py-3 text-sm font-semibold text-red-300 transition hover:border-red-600 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                                            className="app-button-danger w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                                         >
                                             Cerrar sesión
                                         </button>
@@ -176,7 +176,7 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                                     <button
                                         type="submit"
                                         disabled={logoutForm.processing}
-                                        className="w-full rounded-xl border border-zinc-700 px-4 py-3 text-sm font-semibold text-white transition hover:border-white disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
+                                        className="app-button w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto"
                                     >
                                         Salir
                                     </button>
@@ -184,10 +184,10 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
                             </div>
                         </div>
 
-                        <aside className="flex min-h-full flex-col rounded-2xl border border-white/10 bg-zinc-900 p-5 lg:sticky lg:top-6">
+                        <aside className="app-surface-raised flex min-h-full flex-col rounded-2xl border p-5 lg:sticky lg:top-6">
                              <div>
-                                <p className="text-sm font-medium text-zinc-200">{qrStatusMessage}</p>
-                                <div className="mt-4 flex aspect-square w-full items-center justify-center rounded-xl border border-white/10 bg-white p-4">
+                                <p className="text-sm font-medium">{qrStatusMessage}</p>
+                                <div className="mt-4 flex aspect-square w-full items-center justify-center rounded-xl border border-(--app-border) bg-white p-4">
                                 {hasQrCode ? (
                                     <img
                                         src={openwa.qrCode?.qrCode}
@@ -224,10 +224,10 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
 function Status({ label, value }: { label: string; value: string | number; }) {
     return (
         <div>
-            <dt className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+            <dt className="app-faint text-xs font-semibold uppercase tracking-wide">
                 {label}
             </dt>
-            <dd className="mt-1 wrap-break-word font-medium text-white">
+            <dd className="mt-1 wrap-break-word font-medium">
                 {value}
             </dd>
         </div>
