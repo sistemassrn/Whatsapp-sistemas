@@ -67,7 +67,7 @@ class WhatsappMessageImporter
      * @param  array<string, mixed>|null  $chatPayload
      * @return array{message: Message|null, created: bool, reason: string|null}
      */
-    public function importMessage(array $messagePayload, ?array $chatPayload = null): array
+    public function importMessage(array $messagePayload, ?array $chatPayload = null, bool $unhideConversation = true): array
     {
         $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
         $messageExternalId = $this->messageExternalId($messagePayload);
@@ -92,7 +92,7 @@ class WhatsappMessageImporter
         $messageType = $this->messageType($messagePayload);
         $media = $this->extractMedia($messagePayload, $messageType);
 
-        $message = DB::transaction(function () use ($chatExternalId, $chatPayload, $fromMe, $media, $messageExternalId, $messagePayload, $messageType): Message {
+        $message = DB::transaction(function () use ($chatExternalId, $chatPayload, $fromMe, $media, $messageExternalId, $messagePayload, $messageType, $unhideConversation): Message {
             $contact = $this->upsertContact($messagePayload, $chatPayload, $chatExternalId, $fromMe);
             $conversation = Conversation::query()->firstOrNew(['external_id' => $chatExternalId]);
 
@@ -101,7 +101,7 @@ class WhatsappMessageImporter
             }
 
             if (! is_string($conversation->title) || trim($conversation->title) === '') {
-                $conversation->title = $this->conversationTitle($messagePayload, $chatPayload, $chatExternalId);
+                $conversation->title = $this->conversationTitle($messagePayload, $chatPayload, $chatExternalId, $fromMe);
             }
 
             $conversation->save();
@@ -127,6 +127,8 @@ class WhatsappMessageImporter
             $conversation->forceFill([
                 'last_message_id' => $message->id,
                 'last_message_at' => $messageTimestamp,
+                'hidden_at' => $unhideConversation ? null : $conversation->hidden_at,
+                'hidden_reason' => $unhideConversation ? null : $conversation->hidden_reason,
             ])->save();
 
             if (! $fromMe && $this->shouldIncreaseUnreadCount($conversation, $messageTimestamp)) {
@@ -630,26 +632,41 @@ class WhatsappMessageImporter
             return null;
         }
 
-        $contactPayload = $this->nestedArray($messagePayload, ['sender', 'contact', '_contact'])
-            ?? $this->nestedArray($chatPayload ?? [], ['contact', '_contact', 'sender'])
+        $chatContactPayload = $this->nestedArray($chatPayload ?? [], ['contact', '_contact', 'sender']);
+        $messageContactPayload = $this->nestedArray($messagePayload, ['sender', 'contact', '_contact']);
+        $contactPayload = $chatContactPayload
+            ?? $messageContactPayload
             ?? $chatPayload
             ?? $messagePayload;
-        $contactExternalId = $this->firstString($contactPayload, ['id', 'contactId', 'externalId', '_serialized'])
+        $contactPayloadExternalId = $contactPayload === $messagePayload
+            ? null
+            : $this->firstString($contactPayload, ['id', 'contactId', 'externalId', '_serialized']);
+        $contactExternalId = $contactPayloadExternalId
             ?? $this->firstString($messagePayload, $fromMe ? ['to', 'from'] : ['from', 'to'])
             ?? $chatExternalId;
+        $namePayload = $fromMe ? ($chatContactPayload ?? $chatPayload ?? []) : $contactPayload;
+        $contact = Contact::query()->firstOrNew(['external_id' => $contactExternalId]);
+        $attributes = [
+            'phone' => $this->firstString($contactPayload, ['phone', 'number', 'user']),
+        ];
+        $name = $this->firstString($namePayload, ['name', 'shortName', 'formattedName'])
+            ?? ($fromMe ? null : $this->firstString($messagePayload, ['notifyName', 'pushName']))
+            ?? $this->firstString($chatPayload ?? [], ['name', 'title']);
+        $pushName = $this->firstString($namePayload, ['pushName', 'notifyName'])
+            ?? ($fromMe ? null : $this->firstString($messagePayload, ['pushName', 'notifyName', 'sender.pushName', 'contact.pushName']))
+            ?? $this->firstString($chatPayload ?? [], ['pushName']);
 
-        return Contact::query()->updateOrCreate(
-            ['external_id' => $contactExternalId],
-            [
-                'name' => $this->firstString($contactPayload, ['name', 'shortName', 'formattedName'])
-                    ?? $this->firstString($messagePayload, ['notifyName', 'pushName'])
-                    ?? $this->firstString($chatPayload ?? [], ['name', 'title']),
-                'push_name' => $this->firstString($contactPayload, ['pushName', 'notifyName'])
-                    ?? $this->firstString($messagePayload, ['pushName', 'notifyName', 'sender.pushName', 'contact.pushName'])
-                    ?? $this->firstString($chatPayload ?? [], ['pushName']),
-                'phone' => $this->firstString($contactPayload, ['phone', 'number', 'user']),
-            ],
-        );
+        if ($name !== null || ! $contact->exists) {
+            $attributes['name'] = $name;
+        }
+
+        if ($pushName !== null || ! $contact->exists) {
+            $attributes['push_name'] = $pushName;
+        }
+
+        $contact->forceFill($attributes)->save();
+
+        return $contact;
     }
 
     /**
@@ -695,7 +712,7 @@ class WhatsappMessageImporter
      * @param  array<string, mixed>  $messagePayload
      * @param  array<string, mixed>|null  $chatPayload
      */
-    private function conversationTitle(array $messagePayload, ?array $chatPayload, string $fallback): string
+    private function conversationTitle(array $messagePayload, ?array $chatPayload, string $fallback, bool $fromMe): string
     {
         if ($this->isGroupChat($messagePayload, $fallback) || $this->isGroupChat($chatPayload ?? [], $fallback)) {
             return $this->firstString($chatPayload ?? [], ['name', 'title', 'formattedTitle'])
@@ -704,7 +721,9 @@ class WhatsappMessageImporter
         }
 
         return $this->firstString($chatPayload ?? [], ['name', 'title', 'pushName', 'formattedTitle'])
-            ?? $this->firstString($messagePayload, ['chat.name', 'chat.title', 'chat.formattedTitle', 'contact.name', 'notifyName', 'pushName', 'contact.pushName'])
+            ?? $this->firstString($messagePayload, $fromMe
+                ? ['chat.name', 'chat.title', 'chat.formattedTitle']
+                : ['chat.name', 'chat.title', 'chat.formattedTitle', 'contact.name', 'notifyName', 'pushName', 'contact.pushName'])
             ?? $fallback;
     }
 

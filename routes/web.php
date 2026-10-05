@@ -34,6 +34,10 @@ Route::post('/whatsapp/conversations/{conversation}/mark-unread', [WhatsappConve
     ->middleware('auth')
     ->name('whatsapp.conversations.mark-unread');
 
+Route::post('/whatsapp/conversations/{conversation}/hide', [WhatsappConversationsController::class, 'hide'])
+    ->middleware('auth')
+    ->name('whatsapp.conversations.hide');
+
 Route::post('/whatsapp/contacts/{contact}/avatar', WhatsappContactAvatarController::class)
     ->middleware('auth')
     ->name('whatsapp.contacts.avatar');

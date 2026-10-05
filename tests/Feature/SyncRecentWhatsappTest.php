@@ -300,7 +300,7 @@ it('downloads omitted media while syncing recent history', function () {
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('sync-image-bytes');
 });
 
-it('skips chats whose chat and message activity are older than three months', function () {
+it('skips chats whose chat and message activity are older than the import max age', function () {
     Http::fake(function ($request) {
         $url = rawurldecode(rawurldecode($request->url()));
 
@@ -311,7 +311,7 @@ it('skips chats whose chat and message activity are older than three months', fu
                     'chatId' => '5494444444444@c.us',
                     'fromMe' => false,
                     'body' => 'Mensaje viejo',
-                    'timestamp' => now()->subMonths(4)->timestamp,
+                    'timestamp' => now()->subDays(241)->timestamp,
                 ]],
             ]);
         }
@@ -321,7 +321,7 @@ it('skips chats whose chat and message activity are older than three months', fu
                 'data' => [[
                     'id' => '5494444444444@c.us',
                     'name' => 'Cliente Viejo',
-                    'timestamp' => now()->subMonths(4)->timestamp,
+                    'timestamp' => now()->subDays(241)->timestamp,
                 ]],
             ]);
         }
@@ -345,7 +345,7 @@ it('skips chats whose chat and message activity are older than three months', fu
         ->and(Message::query()->where('external_id', 'wamid-old-sync')->exists())->toBeFalse();
 });
 
-it('keeps saved contacts even when their messages are older than three months', function () {
+it('keeps saved contacts even when their messages are older than the import max age', function () {
     Http::fake(function ($request) {
         $url = rawurldecode(rawurldecode($request->url()));
 
@@ -356,7 +356,7 @@ it('keeps saved contacts even when their messages are older than three months', 
                     'chatId' => '5496666666666@c.us',
                     'fromMe' => false,
                     'body' => 'Mensaje viejo guardado',
-                    'timestamp' => now()->subMonths(4)->timestamp,
+                    'timestamp' => now()->subDays(241)->timestamp,
                 ]],
             ]);
         }
@@ -367,7 +367,7 @@ it('keeps saved contacts even when their messages are older than three months', 
                     'id' => '5496666666666@c.us',
                     'name' => 'Cliente Guardado',
                     'isSaved' => true,
-                    'timestamp' => now()->subMonths(4)->timestamp,
+                    'timestamp' => now()->subDays(241)->timestamp,
                     'contact' => [
                         'id' => '5496666666666@c.us',
                         'pushName' => 'Guardado',
@@ -396,6 +396,50 @@ it('keeps saved contacts even when their messages are older than three months', 
     expect($conversation->title)->toBe('Cliente Guardado')
         ->and($conversation->contact)->not->toBeNull()
         ->and(Message::query()->where('external_id', 'wamid-old-saved-sync')->exists())->toBeFalse();
+});
+
+it('skips unknown historical chats during recent sync', function () {
+    Http::fake(function ($request) {
+        $url = rawurldecode(rawurldecode($request->url()));
+
+        if (str_contains($url, '/sessions/session-1/messages/5499999999999@c.us/history')) {
+            return Http::response([
+                'data' => [[
+                    'id' => 'wamid-unknown-sync',
+                    'chatId' => '5499999999999@c.us',
+                    'fromMe' => false,
+                    'body' => 'Mensaje técnico sin contacto',
+                    'timestamp' => now()->timestamp,
+                ]],
+            ]);
+        }
+
+        if (str_contains($url, '/sessions/session-1/chats')) {
+            return Http::response([
+                'data' => [[
+                    'id' => '5499999999999@c.us',
+                    'title' => '5499999999999@c.us',
+                ]],
+            ]);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
+            ]);
+        }
+
+        return Http::response([], 404);
+    });
+
+    $this->artisan('whatsapp:sync-recent')->assertSuccessful();
+
+    expect(Conversation::query()->where('external_id', '5499999999999@c.us')->exists())->toBeFalse()
+        ->and(Message::query()->where('external_id', 'wamid-unknown-sync')->exists())->toBeFalse();
 });
 
 it('increments unread count for newly imported inbound messages', function () {

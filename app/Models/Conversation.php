@@ -17,6 +17,8 @@ use Illuminate\Support\Carbon;
  * @property Carbon|null $last_read_at
  * @property Carbon|null $marked_unread_at
  * @property int $unread_count
+ * @property Carbon|null $hidden_at
+ * @property string|null $hidden_reason
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property-read Contact|null $contact
@@ -37,6 +39,8 @@ class Conversation extends WhatsappModel
         'last_read_at',
         'marked_unread_at',
         'unread_count',
+        'hidden_at',
+        'hidden_reason',
     ];
 
     /**
@@ -51,6 +55,7 @@ class Conversation extends WhatsappModel
             'last_read_at' => 'datetime',
             'marked_unread_at' => 'datetime',
             'unread_count' => 'integer',
+            'hidden_at' => 'datetime',
         ];
     }
 

@@ -6,6 +6,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
+use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
@@ -13,7 +14,6 @@ use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
-use Illuminate\Support\Carbon;
 
 #[Signature('whatsapp:sync-initial {--limit-chats=30} {--limit-messages=50}')]
 #[Description('Synchronize initial chats and messages from OpenWA into local persistence')]
@@ -30,12 +30,12 @@ class SyncInitialWhatsapp extends Command
     /**
      * Execute the console command.
      */
-    public function handle(OpenWaClient $client, WhatsappMessageImporter $importer): int
+    public function handle(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappHistoricalImportFilter $filter): int
     {
         $sessionName = (string) config('openwa.session_name');
         $limitChats = max(1, (int) $this->option('limit-chats'));
         $limitMessages = max(1, (int) $this->option('limit-messages'));
-        $syncCutoff = now()->subMonths(3);
+        $syncCutoff = $filter->syncCutoff();
 
         if ($sessionName === '') {
             $this->error('OPENWA_SESSION_NAME no está configurado.');
@@ -90,7 +90,7 @@ class SyncInitialWhatsapp extends Command
                 continue;
             }
 
-            $this->syncChat($client, $importer, $sessionId, $chat, $limitMessages, $syncCutoff);
+            $this->syncChat($client, $importer, $filter, $sessionId, $chat, $limitMessages, $syncCutoff);
         }
 
         $this->info("Chats procesados: {$this->chatsProcessed}");
@@ -121,7 +121,7 @@ class SyncInitialWhatsapp extends Command
     /**
      * @param  array<string, mixed>  $chat
      */
-    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, string $sessionId, array $chat, int $limitMessages, CarbonInterface $syncCutoff): void
+    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappHistoricalImportFilter $filter, string $sessionId, array $chat, int $limitMessages, CarbonInterface $syncCutoff): void
     {
         $chatExternalId = $this->firstString($chat, ['id', 'chatId', 'externalId', '_data.id._serialized', '_data.id']);
 
@@ -141,9 +141,9 @@ class SyncInitialWhatsapp extends Command
             return;
         }
 
-        $recentMessages = array_values(array_filter($messages, fn (mixed $message): bool => is_array($message) && $this->isRecentPayload($message, $syncCutoff)));
+        $recentMessages = array_values(array_filter($messages, fn (mixed $message): bool => is_array($message) && $filter->isRecentPayload($message, $syncCutoff)));
 
-        if (! $this->shouldSyncChat($chat, $recentMessages, $syncCutoff)) {
+        if (! $filter->shouldSyncChat($chat, $recentMessages, $syncCutoff)) {
             return;
         }
 
@@ -166,7 +166,7 @@ class SyncInitialWhatsapp extends Command
                 continue;
             }
 
-            $result = $importer->importMessage($messagePayload, $chat);
+            $result = $importer->importMessage($messagePayload, $chat, unhideConversation: false);
             $message = $result['message'];
             $created = $result['created'];
             $messageTimestamp = $message?->sent_at ?? $message?->received_at ?? $message?->created_at;
@@ -343,79 +343,6 @@ class SyncInitialWhatsapp extends Command
             'starting', 'qr', 'pairing', 'connecting' => 'connecting',
             default => 'disconnected',
         };
-    }
-
-    /**
-     * @param  array<string, mixed>  $chat
-     * @param  list<mixed>  $recentMessages
-     */
-    private function shouldSyncChat(array $chat, array $recentMessages, CarbonInterface $syncCutoff): bool
-    {
-        if ($this->isSavedOrScheduledChat($chat)) {
-            return true;
-        }
-
-        if ($recentMessages !== []) {
-            return true;
-        }
-
-        $chatTimestamp = $this->payloadTimestamp($chat, ['timestamp', 't', 'time', 'lastMessage.timestamp', 'lastMessage.t', 'lastMessageAt', 'updatedAt']);
-
-        return $chatTimestamp !== null && $chatTimestamp->greaterThanOrEqualTo($syncCutoff);
-    }
-
-    /**
-     * @param  array<string, mixed>  $payload
-     */
-    private function isRecentPayload(array $payload, CarbonInterface $syncCutoff): bool
-    {
-        $timestamp = $this->payloadTimestamp($payload, ['timestamp', 't', 'time', 'createdAt', 'date']);
-
-        return $timestamp === null || $timestamp->greaterThanOrEqualTo($syncCutoff);
-    }
-
-    /**
-     * @param  array<string, mixed>  $chat
-     */
-    private function isSavedOrScheduledChat(array $chat): bool
-    {
-        foreach (['isSaved', 'saved', 'isScheduled', 'scheduled', 'isMyContact', 'contact.isMyContact', 'contact.isAddressBookContact'] as $key) {
-            if (data_get($chat, $key) === true) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * @param  array<string, mixed>  $payload
-     * @param  list<string>  $keys
-     */
-    private function payloadTimestamp(array $payload, array $keys): ?Carbon
-    {
-        foreach ($keys as $key) {
-            $value = data_get($payload, $key);
-
-            if (is_numeric($value)) {
-                $timestamp = (int) $value;
-
-                return Carbon::createFromTimestamp(
-                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
-                    config('app.timezone'),
-                );
-            }
-
-            if (is_string($value) && trim($value) !== '') {
-                try {
-                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
-                } catch (\Throwable) {
-                    continue;
-                }
-            }
-        }
-
-        return null;
     }
 
     private function readableOpenWaError(ConnectionException|RequestException $exception): string

@@ -107,7 +107,7 @@ export default function Home() {
                         <button
                             type="submit"
                             disabled={processing}
-                            className="app-button-primary mt-4! w-full rounded-xl border px-4 py-1.5 text-md font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
+                            className="app-button-primary mt-4! w-full rounded-xl border px-4 py-1.5 text-md transition disabled:cursor-not-allowed disabled:opacity-60"
                         >
                             {processing ? 'Ingresando...' : 'Ingresar'}
                         </button>

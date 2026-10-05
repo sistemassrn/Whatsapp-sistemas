@@ -4,6 +4,7 @@ use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\OpenWaClient;
+use App\Services\WhatsappMessageImporter;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
@@ -109,31 +110,172 @@ it('redirects conversations to connect when OpenWA is unavailable', function () 
         );
 });
 
-it('cleans raw chat identifiers for conversation display names', function () {
+it('normalizes conversation display names without exposing raw chat identifiers', function () {
     $this->withoutMiddleware(Authenticate::class);
     $this->withoutVite();
 
     bindReadyOpenWaClient();
 
-    $contact = Contact::query()->create([
+    $knownContact = Contact::query()->create([
+        'external_id' => '5491166666666@c.us',
+        'name' => 'Cliente Guardado',
+        'push_name' => 'Alias Guardado',
+        'phone' => '5491166666666',
+    ]);
+
+    $knownConversation = Conversation::query()->create([
+        'external_id' => '5491166666666@lid',
+        'contact_id' => $knownContact->id,
+        'title' => '5491166666666@lid',
+        'last_message_at' => now()->subMinutes(3),
+    ]);
+
+    $unknownPhoneConversation = Conversation::query()->create([
+        'external_id' => '5491188888888@c.us',
+        'title' => '5491188888888@c.us',
+        'last_message_at' => now()->subMinutes(2),
+    ]);
+
+    $lidPhoneContact = Contact::query()->create([
         'external_id' => '5491177777777@c.us',
         'phone' => '5491177777777',
     ]);
 
-    $conversation = Conversation::query()->create([
+    $lidPhoneConversation = Conversation::query()->create([
         'external_id' => '5491177777777@lid',
-        'contact_id' => $contact->id,
+        'contact_id' => $lidPhoneContact->id,
         'title' => '5491177777777@lid',
+        'last_message_at' => now()->subMinute(),
+    ]);
+
+    $unresolvedLidConversation = Conversation::query()->create([
+        'external_id' => '123456789012345678901234@lid',
+        'title' => '123456789012345678901234@lid',
         'last_message_at' => now(),
     ]);
+
+    collect([
+        [$knownConversation, now()->subMinutes(3)],
+        [$unknownPhoneConversation, now()->subMinutes(2)],
+        [$lidPhoneConversation, now()->subMinute()],
+        [$unresolvedLidConversation, now()],
+    ])->each(function (array $fixture): void {
+        [$conversation, $receivedAt] = $fixture;
+
+        Message::query()->create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'body' => 'Mensaje de prueba',
+            'status' => 'received',
+            'received_at' => $receivedAt,
+        ]);
+    });
 
     $this->get(route('whatsapp.conversations'))
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->component('whatsapp/conversations')
-            ->where('conversations.0.external_id', $conversation->external_id)
-            ->where('conversations.0.title', '5491177777777')
+            ->where('conversations.0.external_id', $unresolvedLidConversation->external_id)
+            ->where('conversations.0.title', 'Contacto desconocido')
+            ->where('conversations.1.external_id', $lidPhoneConversation->external_id)
+            ->where('conversations.1.title', '5491177777777')
+            ->where('conversations.2.external_id', $unknownPhoneConversation->external_id)
+            ->where('conversations.2.title', '5491188888888')
+            ->where('conversations.3.external_id', $knownConversation->external_id)
+            ->where('conversations.3.title', 'Cliente Guardado')
         );
+});
+
+it('ignores own profile placeholder when displaying conversation names', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $pollutedPhoneContact = Contact::query()->create([
+        'external_id' => '5491155555555@c.us',
+        'name' => 'Mi Num',
+        'push_name' => 'mi num',
+    ]);
+
+    $pollutedPhoneConversation = Conversation::query()->create([
+        'external_id' => '5491155555555@c.us',
+        'contact_id' => $pollutedPhoneContact->id,
+        'title' => 'Mi num',
+        'last_message_at' => now()->subMinutes(2),
+    ]);
+
+    $pollutedLidContact = Contact::query()->create([
+        'external_id' => '123456789012345678901234@lid',
+        'name' => 'Mi Num',
+    ]);
+
+    $pollutedLidConversation = Conversation::query()->create([
+        'external_id' => '123456789012345678901234@lid',
+        'contact_id' => $pollutedLidContact->id,
+        'title' => 'mi num',
+        'last_message_at' => now()->subMinute(),
+    ]);
+
+    $realNameContact = Contact::query()->create([
+        'external_id' => '5491166666666@c.us',
+        'name' => 'mauro',
+    ]);
+
+    $realNameConversation = Conversation::query()->create([
+        'external_id' => '5491166666666@c.us',
+        'contact_id' => $realNameContact->id,
+        'title' => 'Mi Num',
+        'last_message_at' => now(),
+    ]);
+
+    collect([
+        [$pollutedPhoneConversation, now()->subMinutes(2)],
+        [$pollutedLidConversation, now()->subMinute()],
+        [$realNameConversation, now()],
+    ])->each(function (array $fixture): void {
+        [$conversation, $receivedAt] = $fixture;
+
+        Message::query()->create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'body' => 'Mensaje de prueba',
+            'status' => 'received',
+            'received_at' => $receivedAt,
+        ]);
+    });
+
+    $this->get(route('whatsapp.conversations'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->where('conversations.0.external_id', $realNameConversation->external_id)
+            ->where('conversations.0.title', 'mauro')
+            ->where('conversations.1.external_id', $pollutedLidConversation->external_id)
+            ->where('conversations.1.title', 'Contacto desconocido')
+            ->where('conversations.2.external_id', $pollutedPhoneConversation->external_id)
+            ->where('conversations.2.title', '5491155555555')
+        );
+});
+
+it('does not save outbound message push names as remote contact names', function () {
+    app(WhatsappMessageImporter::class)->importMessage([
+        'id' => 'wamid-outbound-placeholder-1',
+        'chatId' => '5491199999999@c.us',
+        'to' => '5491199999999@c.us',
+        'fromMe' => true,
+        'body' => 'Respuesta',
+        'notifyName' => 'Mi Num',
+        'pushName' => 'Mi Num',
+        'timestamp' => now()->timestamp,
+    ]);
+
+    $contact = Contact::query()->where('external_id', '5491199999999@c.us')->firstOrFail();
+    $conversation = Conversation::query()->where('external_id', '5491199999999@c.us')->firstOrFail();
+
+    expect($contact->name)->toBeNull()
+        ->and($contact->push_name)->toBeNull()
+        ->and($conversation->title)->toBe('5491199999999@c.us');
 });
 
 it('does not filter loaded messages by message search anymore', function () {
@@ -422,6 +564,95 @@ it('marks a conversation unread manually without inventing a count', function ()
 
     expect($conversation->unread_count)->toBe(0)
         ->and($conversation->marked_unread_at)->not->toBeNull();
+});
+
+it('hides conversations from the list by default', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $visibleConversation = Conversation::query()->create([
+        'external_id' => '5491011111111@c.us',
+        'title' => 'Cliente Visible',
+        'last_message_at' => now(),
+    ]);
+
+    $hiddenConversation = Conversation::query()->create([
+        'external_id' => '5491022222222@c.us',
+        'title' => 'Cliente Oculto',
+        'last_message_at' => now()->addMinute(),
+        'hidden_at' => now(),
+        'hidden_reason' => 'user_hidden',
+    ]);
+
+    Message::query()->create([
+        'conversation_id' => $visibleConversation->id,
+        'direction' => 'inbound',
+        'body' => 'Visible',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    Message::query()->create([
+        'conversation_id' => $hiddenConversation->id,
+        'direction' => 'inbound',
+        'body' => 'Oculto',
+        'status' => 'received',
+        'received_at' => now()->addMinute(),
+    ]);
+
+    $this->get(route('whatsapp.conversations'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->has('conversations', 1)
+            ->where('conversations.0.external_id', $visibleConversation->external_id),
+        );
+});
+
+it('hides a conversation locally and redirects without selecting it', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491033333333@c.us',
+        'title' => 'Cliente Local',
+        'last_message_at' => now(),
+    ]);
+
+    $this->post(route('whatsapp.conversations.hide', $conversation), [
+        'chat' => $conversation->external_id,
+        'chat_search' => 'Local',
+    ])->assertRedirect(route('whatsapp.conversations', ['chat_search' => 'Local']));
+
+    $conversation->refresh();
+
+    expect($conversation->hidden_at)->not->toBeNull()
+        ->and($conversation->hidden_reason)->toBe('user_hidden');
+});
+
+it('unhides a hidden conversation when a new webhook message is imported', function () {
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491044444444@c.us',
+        'title' => 'Cliente Oculto',
+        'last_message_at' => now()->subDay(),
+        'hidden_at' => now()->subHour(),
+        'hidden_reason' => 'user_hidden',
+    ]);
+
+    app(WhatsappMessageImporter::class)->importMessage([
+        'id' => 'wamid-unhide-1',
+        'chatId' => $conversation->external_id,
+        'fromMe' => false,
+        'body' => 'Volví con una consulta',
+        'timestamp' => now()->timestamp,
+    ]);
+
+    $conversation->refresh();
+
+    expect($conversation->hidden_at)->toBeNull()
+        ->and($conversation->hidden_reason)->toBeNull()
+        ->and($conversation->unread_count)->toBe(1);
 });
 
 function bindReadyOpenWaClient(): void

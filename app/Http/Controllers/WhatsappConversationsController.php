@@ -36,6 +36,7 @@ class WhatsappConversationsController extends Controller
         $firstUnreadMessageId = null;
 
         $conversationsQuery = Conversation::query()
+            ->whereNull('hidden_at')
             ->with(['contact', 'lastMessage'])
             ->tap(fn (Builder $query): Builder => self::withLatestMessageSnapshot($query))
             ->when($chatSearch !== '', fn (Builder $query): Builder => self::applyChatSearch($query, $chatSearch))
@@ -50,6 +51,7 @@ class WhatsappConversationsController extends Controller
 
         if ($selectedChatId !== '') {
             $selectedConversation = Conversation::query()
+                ->whereNull('hidden_at')
                 ->tap(fn (Builder $query): Builder => self::withLatestMessageSnapshot($query))
                 ->where('external_id', $selectedChatId)
                 ->when($chatSearch !== '', fn (Builder $query): Builder => self::applyChatSearch($query, $chatSearch))
@@ -131,7 +133,7 @@ class WhatsappConversationsController extends Controller
                     'unread_count' => $conversation->unread_count,
                 ];
             }),
-            'selectedChatId' => $selectedConversation?->external_id ?? ($selectedChatId !== '' ? $selectedChatId : null),
+            'selectedChatId' => $selectedConversation?->external_id,
             'messageLimit' => $messageLimit,
             'hasMoreMessages' => $selectedConversationMessageCount > $messageLimit,
             'firstUnreadMessageId' => $firstUnreadMessageId,
@@ -184,6 +186,18 @@ class WhatsappConversationsController extends Controller
         }
 
         return redirect()->route('whatsapp.conversations', $redirectParameters);
+    }
+
+    public function hide(Request $request, Conversation $conversation): RedirectResponse
+    {
+        $conversation->forceFill([
+            'hidden_at' => now(),
+            'hidden_reason' => 'user_hidden',
+        ])->save();
+
+        return redirect()->route('whatsapp.conversations', [
+            'chat_search' => $request->string('chat_search')->toString(),
+        ])->with('success', 'Chat eliminado de esta app. No se borró en WhatsApp.');
     }
 
     private function markConversationRead(Conversation $conversation): void
@@ -274,12 +288,12 @@ class WhatsappConversationsController extends Controller
     private static function conversationDisplayName(Conversation $conversation): string
     {
         foreach ([
-            $conversation->title,
             $conversation->contact?->name,
             $conversation->contact?->push_name,
             $conversation->contact?->phone,
-            $conversation->contact?->external_id,
             $conversation->external_id,
+            $conversation->contact?->external_id,
+            $conversation->title,
         ] as $candidate) {
             $displayName = self::cleanDisplayIdentifier($candidate);
 
@@ -288,7 +302,7 @@ class WhatsappConversationsController extends Controller
             }
         }
 
-        return 'Chat sin nombre';
+        return 'Contacto desconocido';
     }
 
     private static function contactDisplayName(Conversation $conversation): ?string
@@ -312,8 +326,22 @@ class WhatsappConversationsController extends Controller
             return null;
         }
 
+        if (strtolower($value) === 'mi num') {
+            return null;
+        }
+
+        if (Str::endsWith($value, '@lid')) {
+            return null;
+        }
+
+        if (Str::endsWith($value, '@c.us')) {
+            $phone = Str::before($value, '@');
+
+            return preg_match('/^\d{6,15}$/', $phone) === 1 ? $phone : null;
+        }
+
         if (str_contains($value, '@')) {
-            $value = Str::before($value, '@');
+            return null;
         }
 
         $value = trim($value);

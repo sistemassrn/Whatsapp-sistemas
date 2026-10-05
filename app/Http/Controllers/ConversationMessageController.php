@@ -89,6 +89,8 @@ class ConversationMessageController extends Controller
         $conversation->update([
             'last_message_id' => end($messages)->id,
             'last_message_at' => $now,
+            'hidden_at' => null,
+            'hidden_reason' => null,
         ]);
 
         try {

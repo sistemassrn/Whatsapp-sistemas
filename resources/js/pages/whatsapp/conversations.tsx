@@ -120,7 +120,7 @@ type Props = {
     };
 };
 
-const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'selectedChatId'];
+const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId'];
 const requestedAvatarContactIds = new Set<number>();
 
 function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null>, active: boolean, onClose: () => void) {
@@ -182,9 +182,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
     }, [chatSearch, filters.chat_search, selectedChatId]);
 
     useEffect(() => {
-        if (flash?.success) {
-            toast.success(flash.success);
-        }
+        // if (flash?.success) {
+        //      toast.success(flash.success);
+        // }
 
         if (flash?.error) {
             toast.error(flash.error);
@@ -396,6 +396,44 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
         );
     };
 
+    const hideConversation = () => {
+        setMenuOpen(false);
+
+        toast.custom(
+            (toastInstance) => (
+                <div className="app-menu w-80 rounded-2xl border p-4 text-sm shadow-2xl shadow-black/30">
+                    <p className="font-semibold text-(--app-text)">¿Eliminar chat?</p>
+                    <p className="app-muted mt-1 leading-5">Solo se elimina de esta app. No borra WhatsApp.</p>
+                    <div className="mt-4 flex justify-end gap-2">
+                        <button type="button" onClick={() => toast.dismiss(toastInstance.id)} className="app-button-secondary rounded-full px-3 py-1.5 text-xs font-semibold">
+                            Cancelar
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                toast.dismiss(toastInstance.id);
+                                router.post(
+                                    `/whatsapp/conversations/${conversation.id}/hide`,
+                                    compactQuery({
+                                        chat_search: filters.chat_search,
+                                    }),
+                                    {
+                                        only: INBOX_RELOAD_PROPS,
+                                        preserveScroll: true,
+                                    },
+                                );
+                            }}
+                            className="rounded-full bg-red-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-red-600"
+                        >
+                            Eliminar
+                        </button>
+                    </div>
+                </div>
+            ),
+            { duration: Infinity },
+        );
+    };
+
     return (
         <div className={`relative border-b border-(--app-border) transition-all ${active ? 'm-1 rounded-2xl bg-(--app-surface-strong)' : 'm-1 bg-(--app-surface) hover:rounded-2xl hover:bg-(--app-surface-strong)'}`}>
             <a href={conversationHref(conversation.external_id, filters)} className="flex gap-3 px-4 py-3">
@@ -434,10 +472,14 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
                         <MoreVertical className="size-4" />
                     </button>
                     {menuOpen ? (
-                        <div className="app-menu absolute right-0 z-20 mt-2 w-40 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
+                        <div className="app-menu absolute right-0 z-20 mt-2 w-48 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
                             <button type="button" onClick={markConversationUnread} className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left" role="menuitem">
                                 <MailOpen className="size-4 text-(--app-accent)" />
                                 <span>Marcar no leído</span>
+                            </button>
+                            <button type="button" onClick={hideConversation} className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left" role="menuitem">
+                                <Trash2 className="size-4 text-red-400" />
+                                <span>Eliminar chat</span>
                             </button>
                         </div>
                     ) : null}
@@ -553,8 +595,8 @@ function MessagePanel({
     const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const latestMessageKey = latestMessage ? `${latestMessage.id}:${latestMessage.sent_at ?? latestMessage.received_at ?? latestMessage.created_at}` : null;
     const imageGallery = useMemo(
-        () => messages.flatMap((message) => (message.type === 'image' && message.media_url ? [{ id: message.id, url: message.media_url, filename: message.media_filename ?? 'imagen' }] : [])),
-        [messages],
+        () => imagePreview ? contiguousImageGallery(messages, imagePreview.id) : [],
+        [imagePreview, messages],
     );
     const activeImageIndex = imagePreview ? imageGallery.findIndex((image) => image.id === imagePreview.id) : -1;
 
@@ -968,6 +1010,35 @@ function MessagePanel({
             ) : null}
         </>
     );
+}
+
+function isGalleryImage(message: MessageItem): boolean {
+    return message.type === 'image' && message.media_url !== null;
+}
+
+function contiguousImageGallery(messages: MessageItem[], imageId: number): ImagePreview[] {
+    const clickedIndex = messages.findIndex((message) => message.id === imageId);
+
+    if (clickedIndex === -1 || !isGalleryImage(messages[clickedIndex])) {
+        return [];
+    }
+
+    let startIndex = clickedIndex;
+    let endIndex = clickedIndex;
+
+    while (startIndex > 0 && isGalleryImage(messages[startIndex - 1])) {
+        startIndex -= 1;
+    }
+
+    while (endIndex < messages.length - 1 && isGalleryImage(messages[endIndex + 1])) {
+        endIndex += 1;
+    }
+
+    return messages.slice(startIndex, endIndex + 1).map((message) => ({
+        id: message.id,
+        url: message.media_url!,
+        filename: message.media_filename ?? 'imagen',
+    }));
 }
 
 function UnreadDivider({ text }: { text: string }) {

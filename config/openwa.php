@@ -15,6 +15,10 @@ return [
 
     'media_timeout' => (int) env('OPENWA_MEDIA_TIMEOUT', env('OPENWA_TIMEOUT', 30)),
 
+    'import_max_age_days' => (int) env('OPENWA_IMPORT_MAX_AGE_DAYS', 150),
+
+    'import_unknown_historical_chats' => (bool) env('OPENWA_IMPORT_UNKNOWN_HISTORICAL_CHATS', false),
+
     'sync_recent' => [
         'enabled' => (bool) env('WHATSAPP_SYNC_RECENT_ENABLED', false),
         'limit_chats' => (int) env('WHATSAPP_SYNC_RECENT_LIMIT_CHATS', 20),
