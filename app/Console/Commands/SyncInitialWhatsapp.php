@@ -91,6 +91,8 @@ class SyncInitialWhatsapp extends Command
             }
 
             $this->syncChat($client, $importer, $filter, $sessionId, $chat, $limitMessages, $syncCutoff);
+
+            usleep(400000);
         }
 
         $this->info("Chats procesados: {$this->chatsProcessed}");
