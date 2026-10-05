@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Message;
 use App\Services\OpenWaClient;
+use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
 use App\Services\WhatsappMessageMediaDownloader;
 use Illuminate\Http\Client\ConnectionException;
@@ -14,7 +15,7 @@ use Illuminate\Support\Facades\Log;
 
 class OpenWaMessageWebhookController extends Controller
 {
-    public function store(Request $request, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, OpenWaClient $client): JsonResponse
+    public function store(Request $request, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, OpenWaClient $client, WhatsappHistoricalImportFilter $historicalImportFilter): JsonResponse
     {
         $configuredSecret = config('openwa.webhook_secret');
 
@@ -34,6 +35,7 @@ class OpenWaMessageWebhookController extends Controller
         $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
         $chatExternalId = $this->chatExternalId($messagePayload, $fromMe);
         $messageExternalId = $importer->messageExternalId($messagePayload);
+        $chatPayload = $this->chatPayload($payload, $messagePayload);
 
         if ($chatExternalId === null && $messageExternalId === null) {
             Log::warning('WhatsApp webhook ignored because chat id is missing.', [
@@ -49,7 +51,19 @@ class OpenWaMessageWebhookController extends Controller
             ]);
         }
 
-        $result = $importer->importMessage($messagePayload);
+        if (! $historicalImportFilter->shouldImportWebhookMessage($messagePayload, $chatPayload)) {
+            Log::info('WhatsApp webhook historical message ignored.', [
+                'chat_id' => $chatExternalId,
+                'message_id' => $messageExternalId,
+            ]);
+
+            return response()->json([
+                'status' => 'ignored',
+                'reason' => 'historical_unknown_chat',
+            ]);
+        }
+
+        $result = $importer->importMessage($messagePayload, $chatPayload);
         $message = $result['message'];
 
         if (! $message instanceof Message) {
@@ -132,6 +146,17 @@ class OpenWaMessageWebhookController extends Controller
         }
 
         return $this->firstString($messagePayload, $fromMe ? ['to', 'from'] : ['from', 'to']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $messagePayload
+     * @return array<string, mixed>|null
+     */
+    private function chatPayload(array $payload, array $messagePayload): ?array
+    {
+        return $this->nestedArray($payload, ['chat', 'data.chat', 'payload.chat'])
+            ?? $this->nestedArray($messagePayload, ['chat', '_chat']);
     }
 
     /**

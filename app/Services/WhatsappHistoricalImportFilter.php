@@ -40,6 +40,27 @@ class WhatsappHistoricalImportFilter
         return $timestamp === null || $timestamp->greaterThanOrEqualTo($syncCutoff);
     }
 
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @param  array<string, mixed>|null  $chatPayload
+     */
+    public function shouldImportWebhookMessage(array $messagePayload, ?array $chatPayload = null): bool
+    {
+        $timestamp = $this->payloadTimestamp($messagePayload, ['timestamp', 't', 'time', 'createdAt', 'date']);
+
+        if ($timestamp === null || $timestamp->greaterThanOrEqualTo($this->syncCutoff())) {
+            return true;
+        }
+
+        $chat = $this->webhookChatPayload($messagePayload, $chatPayload);
+
+        if ($this->isSavedOrScheduledChat($chat)) {
+            return true;
+        }
+
+        return $this->shouldImportUnknownHistoricalChats() || ! $this->isUnknownHistoricalChat($chat);
+    }
+
     public function syncCutoff(): CarbonInterface
     {
         return now()->subDays(max(1, (int) config('openwa.import_max_age_days', 240)));
@@ -90,6 +111,35 @@ class WhatsappHistoricalImportFilter
     private function shouldImportUnknownHistoricalChats(): bool
     {
         return (bool) config('openwa.import_unknown_historical_chats', false);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @param  array<string, mixed>|null  $chatPayload
+     * @return array<string, mixed>
+     */
+    private function webhookChatPayload(array $messagePayload, ?array $chatPayload): array
+    {
+        $chat = $chatPayload ?? $this->nestedArray($messagePayload, ['chat', '_chat']) ?? [];
+
+        foreach (['id', 'chatId', 'externalId', '_data.id._serialized', '_data.id'] as $key) {
+            if (data_get($chat, $key) !== null) {
+                return $chat;
+            }
+        }
+
+        $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
+        $chat['id'] = $this->firstString($messagePayload, ['chatId', 'conversationId', '_data.id.remote', 'message.chatId'])
+            ?? $this->firstString($messagePayload, $fromMe ? ['to', 'from'] : ['from', 'to']);
+
+        if (! isset($chat['contact'])) {
+            $chat['contact'] = $this->nestedArray($messagePayload, ['sender', 'contact', '_contact']);
+        }
+
+        $chat['title'] = $this->firstString($chat, ['title', 'formattedTitle'])
+            ?? $this->firstString($messagePayload, ['chat.name', 'chat.title', 'chat.formattedTitle']);
+
+        return $chat;
     }
 
     private function isTechnicalIdentifier(string $value): bool

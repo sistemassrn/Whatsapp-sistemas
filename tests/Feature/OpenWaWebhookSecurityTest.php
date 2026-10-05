@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Conversation;
 use App\Models\Message;
 
 it('rejects OpenWA webhooks when a configured shared secret is missing from the request', function () {
@@ -60,14 +61,102 @@ it('fails closed in production mode when webhook secret is required but not conf
         ->assertJson(['message' => 'Webhook secret is not configured']);
 });
 
+it('ignores old unknown OpenWA webhook messages without creating records', function () {
+    config([
+        'openwa.import_unknown_historical_chats' => false,
+        'openwa.import_max_age_days' => 240,
+        'openwa.require_webhook_secret' => false,
+    ]);
+
+    $payload = webhookPayload('old-unknown-webhook-1', [
+        'chatId' => '5491199990000@c.us',
+        'from' => '5491199990000@c.us',
+        'timestamp' => now()->subDays(241)->timestamp,
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), $payload)
+        ->assertOk()
+        ->assertJson([
+            'status' => 'ignored',
+            'reason' => 'historical_unknown_chat',
+        ]);
+
+    expect(Conversation::query()->where('external_id', '5491199990000@c.us')->exists())->toBeFalse()
+        ->and(Message::query()->where('external_id', 'old-unknown-webhook-1')->exists())->toBeFalse();
+});
+
+it('stores new unknown OpenWA webhook messages', function () {
+    config([
+        'openwa.import_unknown_historical_chats' => false,
+        'openwa.require_webhook_secret' => false,
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), webhookPayload('new-unknown-webhook-1', [
+        'chatId' => '5491199990001@c.us',
+        'from' => '5491199990001@c.us',
+        'timestamp' => now()->timestamp,
+    ]))
+        ->assertOk()
+        ->assertJson(['status' => 'stored']);
+
+    expect(Conversation::query()->where('external_id', '5491199990001@c.us')->exists())->toBeTrue()
+        ->and(Message::query()->where('external_id', 'new-unknown-webhook-1')->exists())->toBeTrue();
+});
+
+it('stores OpenWA webhook messages without timestamps', function () {
+    config([
+        'openwa.import_unknown_historical_chats' => false,
+        'openwa.require_webhook_secret' => false,
+    ]);
+
+    $payload = webhookPayload('missing-timestamp-webhook-1', [
+        'chatId' => '5491199990002@c.us',
+        'from' => '5491199990002@c.us',
+    ]);
+    unset($payload['data']['timestamp']);
+
+    $this->postJson(route('internal.openwa.messages.store'), $payload)
+        ->assertOk()
+        ->assertJson(['status' => 'stored']);
+
+    expect(Conversation::query()->where('external_id', '5491199990002@c.us')->exists())->toBeTrue()
+        ->and(Message::query()->where('external_id', 'missing-timestamp-webhook-1')->exists())->toBeTrue();
+});
+
+it('stores old saved contact OpenWA webhook messages', function () {
+    config([
+        'openwa.import_unknown_historical_chats' => false,
+        'openwa.import_max_age_days' => 240,
+        'openwa.require_webhook_secret' => false,
+    ]);
+
+    $payload = webhookPayload('old-saved-webhook-1', [
+        'chatId' => '5491199990003@c.us',
+        'from' => '5491199990003@c.us',
+        'timestamp' => now()->subDays(241)->timestamp,
+        'contact' => [
+            'id' => '5491199990003@c.us',
+            'isMyContact' => true,
+            'pushName' => 'Cliente Guardado',
+        ],
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), $payload)
+        ->assertOk()
+        ->assertJson(['status' => 'stored']);
+
+    expect(Conversation::query()->where('external_id', '5491199990003@c.us')->exists())->toBeTrue()
+        ->and(Message::query()->where('external_id', 'old-saved-webhook-1')->exists())->toBeTrue();
+});
+
 /**
  * @return array<string, mixed>
  */
-function webhookPayload(string $id = 'secret-webhook-1'): array
+function webhookPayload(string $id = 'secret-webhook-1', array $messageOverrides = []): array
 {
     return [
         'event' => 'message.received',
-        'data' => [
+        'data' => array_merge([
             'id' => $id,
             'chatId' => '5491100000000@c.us',
             'from' => '5491100000000@c.us',
@@ -75,6 +164,6 @@ function webhookPayload(string $id = 'secret-webhook-1'): array
             'type' => 'text',
             'body' => 'Mensaje con secreto verificado',
             'timestamp' => now()->timestamp,
-        ],
+        ], $messageOverrides),
     ];
 }
