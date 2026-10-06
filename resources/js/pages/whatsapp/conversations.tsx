@@ -12,6 +12,8 @@ const COMPOSER_TEXTAREA_MAX_HEIGHT = 144;
 const MAX_FILES_PER_SEND = 3;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
+const INCOMING_MESSAGE_SOUND_URL = '/sounds/pop.mp3';
+const INCOMING_MESSAGE_SOUND_COOLDOWN_MS = 3000;
 const CHAT_BACKGROUND_STYLE: CSSProperties = {
     backgroundImage: "linear-gradient(var(--chat-background-overlay), var(--chat-background-overlay)), url('/img/fondochats.webp')",
     backgroundRepeat: 'repeat',
@@ -160,8 +162,80 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const [chatSearch, setChatSearch] = useState(filters.chat_search);
     const chatSearchRef = useRef(chatSearch);
     const chatSearchHasLocalChangeRef = useRef(false);
+    const incomingMessageSoundRef = useRef<HTMLAudioElement | null>(null);
+    const incomingMessageSoundInitializedRef = useRef(false);
+    const incomingMessageSeenKeysRef = useRef<Set<string>>(new Set());
+    const incomingMessageSoundLastPlayedAtRef = useRef(0);
+    const incomingMessageSoundStartedAtRef = useRef(Date.now() - 30000);
     const disconnectForm = useForm({});
     const logoutForm = useForm({});
+
+    useEffect(() => {
+        incomingMessageSoundRef.current = new Audio(INCOMING_MESSAGE_SOUND_URL);
+        incomingMessageSoundRef.current.preload = 'auto';
+
+        const warmIncomingSound = () => {
+            incomingMessageSoundRef.current?.load();
+        };
+
+        document.addEventListener('pointerdown', warmIncomingSound, { once: true });
+        document.addEventListener('keydown', warmIncomingSound, { once: true });
+
+        return () => {
+            document.removeEventListener('pointerdown', warmIncomingSound);
+            document.removeEventListener('keydown', warmIncomingSound);
+            incomingMessageSoundRef.current?.pause();
+            incomingMessageSoundRef.current = null;
+        };
+    }, []);
+
+    useEffect(() => {
+        const incomingKeys = conversations
+            .filter((conversation) => conversation.last_message_direction === 'inbound' && conversation.last_message_at !== null)
+            .map((conversation) => incomingConversationSoundKey(conversation))
+            .filter((key): key is string => key !== null);
+
+        if (!incomingMessageSoundInitializedRef.current) {
+            incomingMessageSeenKeysRef.current = new Set(incomingKeys);
+            incomingMessageSoundInitializedRef.current = true;
+
+            return;
+        }
+
+        const newIncomingKeys = incomingKeys.filter((key) => !incomingMessageSeenKeysRef.current.has(key));
+        incomingKeys.forEach((key) => incomingMessageSeenKeysRef.current.add(key));
+
+        if (newIncomingKeys.length === 0 || document.visibilityState === 'visible' || document.hasFocus()) {
+            return;
+        }
+
+        const hasNewMessageAfterPageOpen = newIncomingKeys.some((key) => {
+            const timestamp = Number(key.split('|')[1] ?? 0);
+
+            return Number.isFinite(timestamp) && timestamp >= incomingMessageSoundStartedAtRef.current;
+        });
+
+        if (!hasNewMessageAfterPageOpen) {
+            return;
+        }
+
+        const now = Date.now();
+
+        if (now - incomingMessageSoundLastPlayedAtRef.current < INCOMING_MESSAGE_SOUND_COOLDOWN_MS) {
+            return;
+        }
+
+        incomingMessageSoundLastPlayedAtRef.current = now;
+
+        const audio = incomingMessageSoundRef.current;
+
+        if (!audio) {
+            return;
+        }
+
+        audio.currentTime = 0;
+        void audio.play().catch(() => undefined);
+    }, [conversations]);
 
     useEffect(() => {
         chatSearchRef.current = chatSearch;
@@ -1923,6 +1997,20 @@ function normalizeSearch(value: string): string {
     return value.trim();
 }
 
+function incomingConversationSoundKey(conversation: ConversationItem): string | null {
+    if (conversation.last_message_at === null) {
+        return null;
+    }
+
+    const timestamp = new Date(conversation.last_message_at).getTime();
+
+    if (Number.isNaN(timestamp)) {
+        return null;
+    }
+
+    return [conversation.external_id, timestamp, conversation.last_message_preview ?? conversation.last_message_body ?? ''].join('|');
+}
+
 function conversationHref(chatId: string, filters: Props['filters']): string {
     const query = new URLSearchParams();
 
@@ -2069,12 +2157,18 @@ function MessageStatusIndicator({ status }: { status: string }) {
         received: 'Recibido',
         seen: 'Enviado',
         sent: 'Enviado',
+        verifying: 'Verificando',
     };
 
-    if (statusKey === 'pending') {
+    if (statusKey === 'pending' || statusKey === 'verifying') {
+        const label = statusLabels[statusKey];
+
         return (
-            <span title={statusLabels.pending} aria-label={statusLabels.pending} role="img" className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-faint) text-[9px] leading-none text-(--app-faint)">
-                ◷
+            <span title={label} aria-label={label} className="inline-flex items-center gap-1 font-medium text-(--app-faint)">
+                <span role="img" className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-faint) text-[9px] leading-none">
+                    ◷
+                </span>
+                {statusKey === 'verifying' ? 'Verificando' : null}
             </span>
         );
     }

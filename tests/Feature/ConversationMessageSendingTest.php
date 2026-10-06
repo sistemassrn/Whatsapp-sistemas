@@ -3,6 +3,7 @@
 use App\Models\Conversation;
 use App\Models\Message;
 use Illuminate\Auth\Middleware\Authenticate;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -257,6 +258,46 @@ it('marks outbound messages as failed when OpenWA rejects the send', function ()
 
     expect($message->status)->toBe('failed')
         ->and($message->error_message)->toBe('Revisá el destinatario, el texto o el adjunto.');
+});
+
+it('marks outbound messages as verifying when OpenWA send confirmation is ambiguous', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake(function ($request) {
+        if ($request->url() === 'http://openwa.test/api/sessions/session-1/messages/send-text') {
+            throw new ConnectionException('Connection timed out');
+        }
+
+        return Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]);
+    });
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $response = $this
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'body' => 'Hola con corte',
+            'idempotency_key' => 'send-openwa-timeout-key-1',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+    $response->assertSessionHas('error', 'No pudimos confirmar el envío. Lo estamos verificando.');
+
+    $message = Message::query()->firstOrFail();
+
+    expect($message->status)->toBe('verifying')
+        ->and($message->error_message)->toBe('No pudimos confirmar el envío. Lo estamos verificando.');
 });
 
 it('does not duplicate messages for the same idempotency key', function () {

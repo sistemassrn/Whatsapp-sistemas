@@ -149,6 +149,49 @@ it('stores old saved contact OpenWA webhook messages', function () {
         ->and(Message::query()->where('external_id', 'old-saved-webhook-1')->exists())->toBeTrue();
 });
 
+it('reconciles fromMe webhook messages with recent local verifying outbound messages', function () {
+    config([
+        'openwa.import_unknown_historical_chats' => false,
+        'openwa.require_webhook_secret' => false,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $localMessage = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'direction' => 'outbound',
+        'body' => 'Mensaje pendiente de confirmar',
+        'type' => 'text',
+        'status' => 'verifying',
+        'error_message' => 'No pudimos confirmar el envío. Lo estamos verificando.',
+        'sent_at' => now(),
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), webhookPayload('from-me-reconcile-1', [
+        'fromMe' => true,
+        'from' => 'me@c.us',
+        'to' => '5491100000000@c.us',
+        'body' => 'Mensaje pendiente de confirmar',
+        'timestamp' => now()->timestamp,
+    ]))
+        ->assertOk()
+        ->assertJson([
+            'status' => 'stored',
+            'message_id' => $localMessage->id,
+        ]);
+
+    expect(Message::query()->count())->toBe(1);
+
+    $localMessage->refresh();
+
+    expect($localMessage->external_id)->toBe('from-me-reconcile-1')
+        ->and($localMessage->status)->toBe('accepted')
+        ->and($localMessage->error_message)->toBeNull();
+});
+
 /**
  * @return array<string, mixed>
  */

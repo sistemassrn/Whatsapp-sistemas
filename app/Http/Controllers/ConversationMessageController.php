@@ -18,6 +18,8 @@ use League\Flysystem\UnableToReadFile;
 
 class ConversationMessageController extends Controller
 {
+    private const VERIFYING_SEND_ERROR = 'No pudimos confirmar el envío. Lo estamos verificando.';
+
     public function store(StoreConversationMessageRequest $request, Conversation $conversation, OpenWaClient $client): RedirectResponse
     {
         /** @var array{body?: string|null, idempotency_key: string, ptt?: bool, voice?: bool} $validated */
@@ -144,8 +146,16 @@ class ConversationMessageController extends Controller
             return $this->redirectToConversation($conversation)
                 ->with('error', $error);
         } catch (ConnectionException|RequestException $exception) {
-            $error = $this->readableSendError($exception);
-            $this->markPendingMessagesAsFailed($messages, $error);
+            if ($this->isDefinitiveSendFailure($exception)) {
+                $error = $this->readableSendError($exception);
+                $this->markPendingMessagesAsFailed($messages, $error);
+
+                return $this->redirectToConversation($conversation)
+                    ->with('error', $error);
+            }
+
+            $error = self::VERIFYING_SEND_ERROR;
+            $this->markPendingMessagesAsVerifying($messages, $error);
 
             return $this->redirectToConversation($conversation)
                 ->with('error', $error);
@@ -185,6 +195,21 @@ class ConversationMessageController extends Controller
         foreach ($messages as $message) {
             if ($message->status === 'pending') {
                 $this->markMessageAsFailed($message, $error);
+            }
+        }
+    }
+
+    /**
+     * @param  list<Message>  $messages
+     */
+    private function markPendingMessagesAsVerifying(array $messages, string $error): void
+    {
+        foreach ($messages as $message) {
+            if ($message->status === 'pending') {
+                $message->update([
+                    'status' => 'verifying',
+                    'error_message' => $error,
+                ]);
             }
         }
     }
@@ -369,7 +394,7 @@ class ConversationMessageController extends Controller
     private function readableSendError(ConnectionException|RequestException $exception): string
     {
         if ($exception instanceof ConnectionException) {
-            return 'No pudimos enviar el mensaje. Reintentá en unos segundos.';
+            return self::VERIFYING_SEND_ERROR;
         }
 
         $status = $exception->response->status();
@@ -387,6 +412,17 @@ class ConversationMessageController extends Controller
         }
 
         return 'No pudimos enviar el mensaje. Reintentá en unos segundos.';
+    }
+
+    private function isDefinitiveSendFailure(ConnectionException|RequestException $exception): bool
+    {
+        if ($exception instanceof ConnectionException) {
+            return false;
+        }
+
+        $status = $exception->response->status();
+
+        return $status >= 400 && $status < 500 && ! in_array($status, [408, 425, 429], true);
     }
 
     private function safeMediaSendError(UnableToReadFile|\RuntimeException $exception): string

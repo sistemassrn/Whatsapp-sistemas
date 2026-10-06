@@ -16,6 +16,8 @@ class WhatsappMessageImporter
 {
     private const MAX_MEDIA_BYTES = 26214400;
 
+    private const OUTBOUND_RECONCILIATION_MINUTES = 10;
+
     private const ALLOWED_MEDIA_MIME_TYPES = [
         'image/jpeg',
         'image/png',
@@ -92,7 +94,7 @@ class WhatsappMessageImporter
         $messageType = $this->messageType($messagePayload);
         $media = $this->extractMedia($messagePayload, $messageType);
 
-        $message = DB::transaction(function () use ($chatExternalId, $chatPayload, $fromMe, $media, $messageExternalId, $messagePayload, $messageType, $unhideConversation): Message {
+        $result = DB::transaction(function () use ($chatExternalId, $chatPayload, $fromMe, $media, $messageExternalId, $messagePayload, $messageType, $unhideConversation): array {
             $contact = $this->upsertContact($messagePayload, $chatPayload, $chatExternalId, $fromMe);
             $conversation = Conversation::query()->firstOrNew(['external_id' => $chatExternalId]);
 
@@ -121,6 +123,21 @@ class WhatsappMessageImporter
             $messageData = array_merge($messageData, $this->mediaAttributes($messagePayload, $media, $messageType));
             $messageData = array_merge($messageData, $this->mutationAttributes($messagePayload));
 
+            $reconciledMessage = $this->reconcileLocalOutboundMessage($conversation, $messageData, $messagePayload, $messageExternalId, $messageType);
+
+            if ($reconciledMessage !== null) {
+                $messageTimestamp = $reconciledMessage->sent_at ?? $reconciledMessage->received_at ?? $reconciledMessage->created_at;
+
+                $conversation->forceFill([
+                    'last_message_id' => $reconciledMessage->id,
+                    'last_message_at' => $messageTimestamp,
+                    'hidden_at' => $unhideConversation ? null : $conversation->hidden_at,
+                    'hidden_reason' => $unhideConversation ? null : $conversation->hidden_reason,
+                ])->save();
+
+                return ['message' => $reconciledMessage, 'created' => false, 'reason' => 'reconciled'];
+            }
+
             $message = Message::query()->create($messageData);
             $messageTimestamp = $message->sent_at ?? $message->received_at ?? $message->created_at;
 
@@ -135,10 +152,74 @@ class WhatsappMessageImporter
                 $conversation->increment('unread_count');
             }
 
-            return $message;
+            return ['message' => $message, 'created' => true, 'reason' => null];
         });
 
-        return ['message' => $message, 'created' => true, 'reason' => null];
+        return $result;
+    }
+
+    /**
+     * @param  array<string, mixed>  $messageData
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function reconcileLocalOutboundMessage(Conversation $conversation, array $messageData, array $messagePayload, ?string $messageExternalId, string $messageType): ?Message
+    {
+        if (($messageData['direction'] ?? null) !== 'outbound' || $messageExternalId === null) {
+            return null;
+        }
+
+        $body = $messageData['body'] ?? null;
+        $candidates = Message::query()
+            ->where('conversation_id', $conversation->id)
+            ->where('direction', 'outbound')
+            ->whereNull('external_id')
+            ->where('type', $messageType)
+            ->whereIn('status', ['pending', 'verifying', 'failed'])
+            ->where(function ($query): void {
+                $query->where('created_at', '>=', now()->subMinutes(self::OUTBOUND_RECONCILIATION_MINUTES))
+                    ->orWhere('sent_at', '>=', now()->subMinutes(self::OUTBOUND_RECONCILIATION_MINUTES));
+            })
+            ->latest('id')
+            ->get();
+
+        $matchingCandidates = $candidates->filter(function (Message $message) use ($body, $messageType): bool {
+            if ($messageType === 'text') {
+                return $body !== null && $message->body === $body;
+            }
+
+            if ($body !== null || $message->body !== null) {
+                return $message->body === $body;
+            }
+
+            return true;
+        })->values();
+
+        if ($matchingCandidates->count() !== 1) {
+            return null;
+        }
+
+        /** @var Message $message */
+        $message = $matchingCandidates->first();
+        $attributes = array_merge($messageData, $this->mutationAttributes($messagePayload));
+        $attributes['error_message'] = null;
+
+        if ($message->body !== null && ($attributes['body'] ?? null) === null) {
+            unset($attributes['body']);
+        }
+
+        if ($message->media_path !== null) {
+            unset(
+                $attributes['media_disk'],
+                $attributes['media_path'],
+                $attributes['media_size_bytes'],
+                $attributes['media_download_status'],
+                $attributes['media_error']
+            );
+        }
+
+        $message->update($attributes);
+
+        return $message->refresh();
     }
 
     /**
