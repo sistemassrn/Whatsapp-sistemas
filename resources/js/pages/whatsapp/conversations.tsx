@@ -83,6 +83,7 @@ type ImagePreview = {
 
 type MessageRenderItem =
     | { type: 'divider'; key: string; text: string }
+    | { type: 'date-divider'; key: string; text: string }
     | { type: 'message'; message: MessageItem }
     | { type: 'image-group'; key: string; messages: MessageItem[] };
 
@@ -985,6 +986,10 @@ function MessagePanel({
                                 return <UnreadDivider key={item.key} text={item.text} />;
                             }
 
+                            if (item.type === 'date-divider') {
+                                return <DateDivider key={item.key} text={item.text} />;
+                            }
+
                             if (item.type === 'image-group') {
                                 return (
                                     <ImageGroupBubble
@@ -1106,6 +1111,30 @@ function isGalleryImage(message: MessageItem): boolean {
     return message.type === 'image' && message.media_url !== null;
 }
 
+function isGroupableGalleryImage(message: MessageItem): boolean {
+    return isGalleryImage(message) && (message.body === null || message.body.trim() === '');
+}
+
+function messageTimestampValue(message: MessageItem): string | null {
+    return message.sent_at ?? message.received_at ?? message.created_at;
+}
+
+function messageDateKey(message: MessageItem): string | null {
+    const value = messageTimestampValue(message);
+
+    if (!value) {
+        return null;
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function contiguousImageGallery(messages: MessageItem[], imageId: number): ImagePreview[] {
     const clickedIndex = messages.findIndex((message) => message.id === imageId);
 
@@ -1113,14 +1142,20 @@ function contiguousImageGallery(messages: MessageItem[], imageId: number): Image
         return [];
     }
 
+    if (!isGroupableGalleryImage(messages[clickedIndex])) {
+        const message = messages[clickedIndex];
+
+        return [{ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' }];
+    }
+
     let startIndex = clickedIndex;
     let endIndex = clickedIndex;
 
-    while (startIndex > 0 && isGalleryImage(messages[startIndex - 1])) {
+    while (startIndex > 0 && isGroupableGalleryImage(messages[startIndex - 1])) {
         startIndex -= 1;
     }
 
-    while (endIndex < messages.length - 1 && isGalleryImage(messages[endIndex + 1])) {
+    while (endIndex < messages.length - 1 && isGroupableGalleryImage(messages[endIndex + 1])) {
         endIndex += 1;
     }
 
@@ -1134,15 +1169,22 @@ function contiguousImageGallery(messages: MessageItem[], imageId: number): Image
 function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId: number | null): MessageRenderItem[] {
     const items: MessageRenderItem[] = [];
     let index = 0;
+    let currentDateKey: string | null = null;
 
     while (index < messages.length) {
         const message = messages[index];
+        const dateKey = messageDateKey(message);
+
+        if (dateKey !== null && dateKey !== currentDateKey) {
+            currentDateKey = dateKey;
+            items.push({ type: 'date-divider', key: `date-${dateKey}`, text: formatMessageDateDivider(messageTimestampValue(message)) });
+        }
 
         if (message.id === firstUnreadMessageId) {
             items.push({ type: 'divider', key: `unread-${message.id}`, text: 'Mensajes no leídos' });
         }
 
-        if (!isGalleryImage(message)) {
+        if (!isGroupableGalleryImage(message)) {
             items.push({ type: 'message', message });
             index += 1;
             continue;
@@ -1151,7 +1193,7 @@ function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId
         const imageMessages: MessageItem[] = [message];
         let nextIndex = index + 1;
 
-        while (nextIndex < messages.length && isGalleryImage(messages[nextIndex]) && messages[nextIndex].id !== firstUnreadMessageId) {
+        while (nextIndex < messages.length && isGroupableGalleryImage(messages[nextIndex]) && messages[nextIndex].id !== firstUnreadMessageId) {
             imageMessages.push(messages[nextIndex]);
             nextIndex += 1;
         }
@@ -1176,6 +1218,18 @@ function UnreadDivider({ text }: { text: string }) {
                 {text}
             </span>
             <span className="app-accent-line h-px flex-1" />
+        </div>
+    );
+}
+
+function DateDivider({ text }: { text: string }) {
+    return (
+        <div className="my-4 flex items-center justify-center gap-3" role="separator" aria-label={text}>
+            <span className="app-date-line h-px w-16 max-w-[22vw]" />
+            <span className="app-date-chip rounded-full border px-3 py-1 text-[11px] font-semibold shadow-sm backdrop-blur">
+                {text}
+            </span>
+            <span className="app-date-line h-px w-16 max-w-[22vw]" />
         </div>
     );
 }
@@ -1576,6 +1630,39 @@ function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageIt
         onTimeLabelChange?.(formatAudioTime(isPlaying ? currentTime : duration));
     }, [currentTime, duration, isPlaying, onTimeLabelChange]);
 
+    useEffect(() => {
+        if (!message.media_url || duration > 0) {
+            return;
+        }
+
+        const AudioContextConstructor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+
+        if (!AudioContextConstructor) {
+            return;
+        }
+
+        const abortController = new AbortController();
+        const audioContext = new AudioContextConstructor();
+
+        fetch(message.media_url, { credentials: 'same-origin', signal: abortController.signal })
+            .then((response) => response.arrayBuffer())
+            .then((buffer) => audioContext.decodeAudioData(buffer))
+            .then((decodedAudio) => {
+                if (!abortController.signal.aborted && Number.isFinite(decodedAudio.duration) && decodedAudio.duration > 0) {
+                    setDuration(decodedAudio.duration);
+                }
+            })
+            .catch(() => undefined)
+            .finally(() => {
+                void audioContext.close().catch(() => undefined);
+            });
+
+        return () => {
+            abortController.abort();
+            void audioContext.close().catch(() => undefined);
+        };
+    }, [duration, message.media_url]);
+
     const updateDuration = (audio: HTMLAudioElement) => {
         if (Number.isFinite(audio.duration) && audio.duration > 0) {
             setDuration(audio.duration);
@@ -1608,7 +1695,7 @@ function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageIt
             <audio
                 data-chat-audio="true"
                 ref={audioRef}
-                preload="metadata"
+                preload="auto"
                 onLoadedMetadata={(event) => updateDuration(event.currentTarget)}
                 onLoadedData={(event) => updateDuration(event.currentTarget)}
                 onDurationChange={(event) => updateDuration(event.currentTarget)}
@@ -1911,8 +1998,38 @@ function formatMessageTimestamp(value: string | null): string {
     });
 }
 
+function formatMessageDateDivider(value: string | null): string {
+    if (!value) {
+        return '';
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    const today = new Date();
+    const yesterday = new Date();
+    yesterday.setDate(today.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) {
+        return 'Hoy';
+    }
+
+    if (date.toDateString() === yesterday.toDateString()) {
+        return 'Ayer';
+    }
+
+    return date.toLocaleDateString('es-AR', {
+        day: '2-digit',
+        month: 'long',
+        year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+    });
+}
+
 function audioMetadataDuration(metadata: Record<string, unknown> | null): number {
-    const rawDuration = metadata?.duration;
+    const rawDuration = metadata?.duration ?? metadata?.durationSeconds ?? metadata?.seconds ?? metadata?.length;
 
     if (typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0) {
         return rawDuration;

@@ -135,6 +135,15 @@ class WhatsappMessageMediaDownloader
         }
 
         $metadata = is_array($message->media_metadata) ? $message->media_metadata : [];
+
+        foreach (['duration', 'durationSeconds', 'seconds', 'width', 'height', 'pageCount'] as $metadataKey) {
+            $metadataValue = $download[$metadataKey] ?? null;
+
+            if (is_scalar($metadataValue)) {
+                $metadata[$metadataKey] = $metadataValue;
+            }
+        }
+
         $message->forceFill([
             'media_disk' => 'whatsapp_media',
             'media_path' => $path,
