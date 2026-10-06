@@ -130,7 +130,7 @@ type Props = {
     };
 };
 
-const INBOX_RELOAD_PROPS = ['connection', 'conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId'];
+const INBOX_RELOAD_PROPS = ['conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId'];
 const requestedAvatarContactIds = new Set<number>();
 
 function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null>, active: boolean, onClose: () => void) {
@@ -344,7 +344,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                 only: INBOX_RELOAD_PROPS,
                 preserveScroll: true,
             });
-        }, 5000);
+        }, 15000);
 
         return () => window.clearInterval(interval);
     }, []);

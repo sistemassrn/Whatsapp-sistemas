@@ -4,6 +4,7 @@ namespace App\Services;
 
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Cache;
 
 class WhatsappConnectionStatus
 {
@@ -75,7 +76,7 @@ class WhatsappConnectionStatus
                 $sessionId = $this->sessionId($session);
 
                 if ($includeQr && $sessionId !== null && ! $this->isReady($session)) {
-                    $qrCode = $this->client->qr($sessionId);
+                    $qrCode = $this->cachedQr($sessionId);
                 }
             }
         } catch (ConnectionException|RequestException $exception) {
@@ -156,6 +157,27 @@ class WhatsappConnectionStatus
         $started = true;
 
         return $this->client->findSessionByName($sessionName) ?? $session;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function cachedQr(string $sessionId): ?array
+    {
+        $cacheKey = "openwa:qr:{$sessionId}";
+        $cached = Cache::get($cacheKey);
+
+        if (is_array($cached) && array_key_exists('qr', $cached)) {
+            $qr = $cached['qr'];
+
+            return is_array($qr) ? $qr : null;
+        }
+
+        $qr = $this->client->qr($sessionId);
+
+        Cache::put($cacheKey, ['qr' => $qr], now()->addSeconds($qr === null ? 5 : 10));
+
+        return $qr;
     }
 
     /**

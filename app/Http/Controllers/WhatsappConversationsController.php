@@ -16,10 +16,14 @@ class WhatsappConversationsController extends Controller
 {
     public function __invoke(Request $request, WhatsappConnectionStatus $connectionStatus): Response|RedirectResponse
     {
-        $connection = $connectionStatus->connection(autoStart: true, includeQr: false);
+        $connection = null;
 
-        if (! $connection['isReady']) {
-            return redirect()->route('whatsapp.connect');
+        if ($this->shouldResolveConnection($request)) {
+            $connection = $connectionStatus->connection(autoStart: true, includeQr: false);
+
+            if (! $connection['isReady']) {
+                return redirect()->route('whatsapp.connect');
+            }
         }
 
         $validated = $request->validate([
@@ -112,7 +116,7 @@ class WhatsappConversationsController extends Controller
                 'success' => session('success'),
                 'error' => session('error'),
             ],
-            'connection' => $connection,
+            'connection' => fn (): array => $connection ?? $connectionStatus->connection(autoStart: true, includeQr: false),
             'conversations' => $conversations->map(function (Conversation $conversation) use ($latestMessages): array {
                 $latestMessage = $latestMessages->get($conversation->getAttribute('latest_message_id')) ?? $conversation->lastMessage;
                 $latestMessageAt = $latestMessage?->sent_at ?? $latestMessage?->received_at ?? $latestMessage?->created_at ?? $conversation->last_message_at;
@@ -215,6 +219,21 @@ class WhatsappConversationsController extends Controller
             'marked_unread_at' => null,
             'unread_count' => 0,
         ])->save();
+    }
+
+    private function shouldResolveConnection(Request $request): bool
+    {
+        if ($request->header('X-Inertia-Partial-Component') !== 'whatsapp/conversations') {
+            return true;
+        }
+
+        $partialData = (string) $request->header('X-Inertia-Partial-Data');
+
+        if ($partialData === '') {
+            return true;
+        }
+
+        return in_array('connection', array_map('trim', explode(',', $partialData)), true);
     }
 
     private function firstUnreadMessageId(Conversation $conversation): ?int

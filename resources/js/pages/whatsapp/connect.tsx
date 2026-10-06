@@ -80,15 +80,17 @@ export default function Connect({ operator, flash, openwa }: ConnectProps) {
             return;
         }
 
+        const pollingInterval = hasQrCode ? 12000 : 5000;
+
         const interval = window.setInterval(() => {
             router.reload({
                 only: ["openwa", "flash"],
                 preserveScroll: true,
             });
-        }, 3000);
+        }, pollingInterval);
 
         return () => window.clearInterval(interval);
-    }, [hasBlockingError, openwa.isReady]);
+    }, [hasBlockingError, hasQrCode, openwa.isReady]);
 
     function start(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
