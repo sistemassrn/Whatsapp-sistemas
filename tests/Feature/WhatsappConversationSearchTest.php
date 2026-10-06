@@ -495,6 +495,48 @@ it('fetches and caches contact avatar from the OpenWA profile picture endpoint',
         ->and($contact->profile_photo_fetched_at)->not->toBeNull();
 });
 
+it('falls back to phone contact id when a lid contact avatar lookup fails', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/health' => Http::response(['status' => 'ok']),
+        'openwa.test/api/sessions/session-1/contacts/12345%40lid/profile-picture' => Http::response(null, 404),
+        'openwa.test/api/sessions/session-1/contacts/5491111111111%40c.us/profile-picture' => Http::response([
+            'url' => 'https://pps.example/phone-avatar.jpg',
+        ]),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $contact = Contact::query()->create([
+        'external_id' => '12345@lid',
+        'phone' => '5491111111111',
+    ]);
+
+    $this->postJson(route('whatsapp.contacts.avatar', $contact))
+        ->assertOk()
+        ->assertJson([
+            'avatar_url' => 'https://pps.example/phone-avatar.jpg',
+        ]);
+
+    $contact->refresh();
+
+    expect($contact->profile_photo_url)->toBe('https://pps.example/phone-avatar.jpg')
+        ->and($contact->profile_photo_fetched_at)->not->toBeNull()
+        ->and($contact->profile_photo_error)->toBeNull();
+
+    Http::assertSent(fn ($request) => $request->url() === 'http://openwa.test/api/sessions/session-1/contacts/12345%40lid/profile-picture');
+    Http::assertSent(fn ($request) => $request->url() === 'http://openwa.test/api/sessions/session-1/contacts/5491111111111%40c.us/profile-picture');
+});
+
 it('uses the newest message as conversation preview when cached last message is stale or missing', function () {
     $this->withoutMiddleware(Authenticate::class);
     $this->withoutVite();

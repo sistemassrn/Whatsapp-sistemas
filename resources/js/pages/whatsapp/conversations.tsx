@@ -461,7 +461,7 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
                 <a href={conversationHref(conversation.external_id, filters)} className="min-w-0 flex-1 pr-14">
                     <div className="flex items-start justify-between gap-3">
                         <p className="truncate text-sm font-semibold">{title}</p>
-                        <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">{formatWhatsAppTimestamp(conversation.last_message_at)}</time>
+                        <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">{formatConversationTimestamp(conversation.last_message_at)}</time>
                     </div>
 
                     {/* {conversation.display_description ? (
@@ -1187,8 +1187,9 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                         ) : null}
                     </>
                 )}
-                <p className="app-muted mt-1 text-right text-[11px]">
-                    {formatWhatsAppTimestamp(timestamp)} · {translateStatus(message.status)}
+                <p className="app-muted mt-1 flex items-center justify-end gap-1 text-[11px]">
+                    <time>{formatMessageTimestamp(timestamp)}</time>
+                    <MessageStatusIndicator status={message.status} />
                     {message.edited_at && !deleted ? ' · Editado' : ''}
                 </p>
                 {message.status === 'failed' && message.error_message ? (
@@ -1625,7 +1626,7 @@ function generateIdempotencyKey(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function formatWhatsAppTimestamp(value: string | null): string {
+function formatConversationTimestamp(value: string | null): string {
     if (!value) {
         return '';
     }
@@ -1648,6 +1649,62 @@ function formatWhatsAppTimestamp(value: string | null): string {
         month: '2-digit',
         year: 'numeric',
     });
+}
+
+function formatMessageTimestamp(value: string | null): string {
+    if (!value) {
+        return '';
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return date.toLocaleTimeString('es-AR', {
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+}
+
+function MessageStatusIndicator({ status }: { status: string }) {
+    const statusKey = status.toLowerCase();
+    const statusLabels: Record<string, string> = {
+        accepted: 'Aceptado',
+        delivered: 'Entregado',
+        failed: 'Fallido',
+        pending: 'Pendiente',
+        read: 'Leído',
+        received: 'Recibido',
+        seen: 'Visto',
+    };
+
+    if (statusKey === 'pending') {
+        return (
+            <span title={statusLabels.pending} aria-label={statusLabels.pending} role="img" className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-faint) text-[9px] leading-none text-(--app-faint)">
+                ◷
+            </span>
+        );
+    }
+
+    if (statusKey === 'failed') {
+        return (
+            <span title={statusLabels.failed} aria-label={statusLabels.failed} role="img" className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-danger) text-[10px] font-bold leading-none text-(--app-danger)">
+                !
+            </span>
+        );
+    }
+
+    const isRead = statusKey === 'read' || statusKey === 'seen';
+    const isDoubleCheck = isRead || statusKey === 'received' || statusKey === 'delivered';
+    const label = statusLabels[statusKey] ?? status;
+
+    return (
+        <span title={label} aria-label={label} role="img" className={`inline-flex items-center font-semibold tracking-[-0.18em] ${isRead ? 'text-sky-400' : 'text-(--app-faint)'}`}>
+            {isDoubleCheck ? '✓✓' : '✓'}
+        </span>
+    );
 }
 
 function mediaLabel(type: string): string {
@@ -1694,15 +1751,4 @@ function escapeRegExp(value: string): string {
 
 function csrfToken(): string {
     return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '';
-}
-
-function translateStatus(status: string): string {
-    const statuses: Record<string, string> = {
-        received: 'Recibido',
-        pending: 'Pendiente',
-        accepted: 'Aceptado',
-        failed: 'Fallido',
-    };
-
-    return statuses[status] ?? status;
 }
