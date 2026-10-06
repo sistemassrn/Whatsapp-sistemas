@@ -162,6 +162,7 @@ class WhatsappConversationsController extends Controller
                 'media_mime_type' => $message->media_mime_type,
                 'media_filename' => $message->media_filename,
                 'media_size_bytes' => $message->media_size_bytes,
+                'media_metadata' => $message->media_metadata,
                 'media_download_status' => $message->media_download_status,
                 'media_error' => $message->media_error,
                 'sent_at' => $message->sent_at?->toISOString(),

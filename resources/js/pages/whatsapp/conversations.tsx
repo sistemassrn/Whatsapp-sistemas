@@ -1,5 +1,5 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MailOpen, MoreVertical, Paperclip, Pencil, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MailOpen, MoreVertical, Paperclip, Pause, Pencil, Play, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ThemeToggle } from '../../theme';
@@ -67,6 +67,7 @@ type MessageItem = {
     media_mime_type: string | null;
     media_filename: string | null;
     media_size_bytes: number | null;
+    media_metadata: Record<string, unknown> | null;
     media_download_status: string | null;
     media_error: string | null;
     sent_at: string | null;
@@ -79,6 +80,11 @@ type ImagePreview = {
     url: string;
     filename: string;
 };
+
+type MessageRenderItem =
+    | { type: 'divider'; key: string; text: string }
+    | { type: 'message'; message: MessageItem }
+    | { type: 'image-group'; key: string; messages: MessageItem[] };
 
 type UploadProgress = {
     percentage?: number | null;
@@ -151,24 +157,54 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const selectedConversation = conversations.find((conversation) => conversation.external_id === selectedChatId) ?? null;
     const operatorName = operator?.name ?? auth?.user?.nombre ?? auth?.user?.usuario ?? 'Operador';
     const [chatSearch, setChatSearch] = useState(filters.chat_search);
+    const chatSearchRef = useRef(chatSearch);
+    const chatSearchHasLocalChangeRef = useRef(false);
     const disconnectForm = useForm({});
     const logoutForm = useForm({});
 
     useEffect(() => {
-        setChatSearch(filters.chat_search);
+        chatSearchRef.current = chatSearch;
+    }, [chatSearch]);
+
+    useEffect(() => {
+        const normalizedFilterSearch = normalizeSearch(filters.chat_search);
+        const normalizedInputSearch = normalizeSearch(chatSearchRef.current);
+
+        if (chatSearchHasLocalChangeRef.current) {
+            if (normalizedFilterSearch === normalizedInputSearch) {
+                chatSearchHasLocalChangeRef.current = false;
+            }
+
+            return;
+        }
+
+        if (chatSearchRef.current !== filters.chat_search) {
+            setChatSearch(filters.chat_search);
+        }
     }, [filters.chat_search]);
 
     useEffect(() => {
+        const normalizedChatSearch = normalizeSearch(chatSearch);
+        const normalizedFilterSearch = normalizeSearch(filters.chat_search);
+
+        if (normalizedChatSearch === normalizedFilterSearch) {
+            return;
+        }
+
         const timeout = window.setTimeout(() => {
-            if (chatSearch === filters.chat_search) {
+            const latestNormalizedSearch = normalizeSearch(chatSearchRef.current);
+
+            if (latestNormalizedSearch === normalizeSearch(filters.chat_search)) {
                 return;
             }
+
+            router.cancelAll({ async: false, prefetch: false });
 
             router.get(
                 '/whatsapp/conversations',
                 compactQuery({
                     chat: selectedChatId,
-                    chat_search: chatSearch,
+                    chat_search: latestNormalizedSearch,
                 }),
                 {
                     only: INBOX_RELOAD_PROPS,
@@ -177,7 +213,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                     replace: true,
                 },
             );
-        }, 300);
+        }, 350);
 
         return () => window.clearTimeout(timeout);
     }, [chatSearch, filters.chat_search, selectedChatId]);
@@ -291,9 +327,13 @@ export default function Conversations({ operator, conversations, selectedChatId,
                             <SearchForm
                                 placeholder="Buscar chats o contactos"
                                 value={chatSearch}
-                                onChange={setChatSearch}
+                                onChange={(value) => {
+                                    chatSearchHasLocalChangeRef.current = true;
+                                    setChatSearch(value);
+                                }}
                                 onSubmit={() => undefined}
                                 onClear={() => {
+                                    chatSearchHasLocalChangeRef.current = true;
                                     setChatSearch('');
                                 }}
                                 className="mt-4"
@@ -622,6 +662,10 @@ function MessagePanel({
 
     const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
     const latestMessageKey = latestMessage ? `${latestMessage.id}:${latestMessage.sent_at ?? latestMessage.received_at ?? latestMessage.created_at}` : null;
+    const messageRenderItems = useMemo(
+        () => groupedMessageRenderItems(messages, firstUnreadMessageId),
+        [firstUnreadMessageId, messages],
+    );
     const imageGallery = useMemo(
         () => imagePreview ? contiguousImageGallery(messages, imagePreview.id) : [],
         [imagePreview, messages],
@@ -936,20 +980,37 @@ function MessagePanel({
                             </div>
                         ) : null}
                         {firstUnreadMessageId !== null && !messages.some((message) => message.id === firstUnreadMessageId) ? <UnreadDivider text="Hay mensajes no leídos más arriba" /> : null}
-                        {messages.map((message) => (
-                            <div key={message.id}>
-                                {message.id === firstUnreadMessageId ? <UnreadDivider text="Mensajes no leídos" /> : null}
+                        {messageRenderItems.map((item) => {
+                            if (item.type === 'divider') {
+                                return <UnreadDivider key={item.key} text={item.text} />;
+                            }
+
+                            if (item.type === 'image-group') {
+                                return (
+                                    <ImageGroupBubble
+                                        key={item.key}
+                                        messages={item.messages}
+                                        onOpenImage={setImagePreview}
+                                        refCallback={(messageId, element) => {
+                                            messageRefs.current[messageId] = element;
+                                        }}
+                                    />
+                                );
+                            }
+
+                            return (
                                 <MessageBubble
-                                    message={message}
+                                    key={item.message.id}
+                                    message={item.message}
                                     onOpenImage={setImagePreview}
                                     searchQuery={messageSearch}
-                                    activeSearchMatch={searchMatches[activeMatchPosition] === message.id}
+                                    activeSearchMatch={searchMatches[activeMatchPosition] === item.message.id}
                                     refCallback={(element) => {
-                                        messageRefs.current[message.id] = element;
+                                        messageRefs.current[item.message.id] = element;
                                     }}
                                 />
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </div>
@@ -1070,6 +1131,43 @@ function contiguousImageGallery(messages: MessageItem[], imageId: number): Image
     }));
 }
 
+function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId: number | null): MessageRenderItem[] {
+    const items: MessageRenderItem[] = [];
+    let index = 0;
+
+    while (index < messages.length) {
+        const message = messages[index];
+
+        if (message.id === firstUnreadMessageId) {
+            items.push({ type: 'divider', key: `unread-${message.id}`, text: 'Mensajes no leídos' });
+        }
+
+        if (!isGalleryImage(message)) {
+            items.push({ type: 'message', message });
+            index += 1;
+            continue;
+        }
+
+        const imageMessages: MessageItem[] = [message];
+        let nextIndex = index + 1;
+
+        while (nextIndex < messages.length && isGalleryImage(messages[nextIndex]) && messages[nextIndex].id !== firstUnreadMessageId) {
+            imageMessages.push(messages[nextIndex]);
+            nextIndex += 1;
+        }
+
+        if (imageMessages.length === 1) {
+            items.push({ type: 'message', message });
+        } else {
+            items.push({ type: 'image-group', key: `images-${imageMessages.map((imageMessage) => imageMessage.id).join('-')}`, messages: imageMessages });
+        }
+
+        index = nextIndex;
+    }
+
+    return items;
+}
+
 function UnreadDivider({ text }: { text: string }) {
     return (
         <div className="my-3 flex items-center gap-3" role="separator" aria-label={text}>
@@ -1082,6 +1180,54 @@ function UnreadDivider({ text }: { text: string }) {
     );
 }
 
+function ImageGroupBubble({ messages, onOpenImage, refCallback }: { messages: MessageItem[]; onOpenImage: (image: ImagePreview) => void; refCallback: (messageId: number, element: HTMLElement | null) => void }) {
+    if (messages.length === 0) {
+        return null;
+    }
+
+    const fromMe = messages[0]?.direction === 'outbound';
+    const lastMessage = messages[messages.length - 1];
+    const timestamp = lastMessage.sent_at ?? lastMessage.received_at ?? lastMessage.created_at;
+    const visibleMessages = messages.slice(0, 4);
+    const hiddenCount = messages.length - visibleMessages.length;
+
+    return (
+        <article className={`flex min-w-0 ${fromMe ? 'justify-end' : 'justify-start'}`}>
+            <div
+                ref={(element) => {
+                    messages.forEach((message) => refCallback(message.id, element));
+                }}
+                className={`app-message-bubble relative min-w-0 max-w-[70%] rounded-xl border p-1.5 shadow-sm transition ${fromMe ? 'app-message-bubble-out' : ''}`}
+            >
+                <div className={`app-image-group app-image-group-${Math.min(messages.length, 4)}`}>
+                    {visibleMessages.map((message, index) => {
+                        const isLastVisible = index === visibleMessages.length - 1;
+
+                        return (
+                            <button
+                                key={message.id}
+                                type="button"
+                                onClick={() => onOpenImage({ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
+                                className={`app-image-group-item ${messages.length === 3 && index === 0 ? 'app-image-group-item-large' : ''}`}
+                                aria-label="Abrir imagen"
+                            >
+                                <img src={message.media_url!} alt={message.media_filename ?? 'Imagen adjunta'} loading="lazy" />
+                                {hiddenCount > 0 && isLastVisible ? (
+                                    <span className="app-image-group-more">+{hiddenCount}</span>
+                                ) : null}
+                            </button>
+                        );
+                    })}
+                </div>
+                <p className="app-muted mt-1 flex items-center justify-end gap-1 px-1 text-[11px]">
+                    <time>{formatMessageTimestamp(timestamp)}</time>
+                    <MessageStatusIndicator status={lastMessage.status} />
+                </p>
+            </div>
+        </article>
+    );
+}
+
 function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, refCallback }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void; searchQuery: string; activeSearchMatch: boolean; refCallback: (element: HTMLElement | null) => void }) {
     const fromMe = message.direction === 'outbound';
     const timestamp = message.sent_at ?? message.received_at ?? message.created_at;
@@ -1091,6 +1237,7 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
     const [editBody, setEditBody] = useState(message.body ?? '');
     const [processingMutation, setProcessingMutation] = useState(false);
     const [messageExpanded, setMessageExpanded] = useState(false);
+    const [audioTimeLabel, setAudioTimeLabel] = useState<string | null>(() => message.type === 'audio' ? formatAudioTime(audioMetadataDuration(message.media_metadata)) : null);
     const deleted = message.deleted_at !== null;
     const canShowMenu = !deleted && (message.can_edit || message.can_delete);
 
@@ -1101,6 +1248,10 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
             setEditBody(message.body ?? '');
         }
     }, [actionMode, message.body]);
+
+    useEffect(() => {
+        setAudioTimeLabel(message.type === 'audio' ? formatAudioTime(audioMetadataDuration(message.media_metadata)) : null);
+    }, [message.media_metadata, message.type]);
 
     const closeActions = () => {
         setActionsOpen(false);
@@ -1173,7 +1324,7 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                     <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">Mensaje eliminado</p>
                 ) : (
                     <>
-                <MessageMedia message={message} onOpenImage={onOpenImage} />
+                        <MessageMedia message={message} onAudioTimeLabelChange={setAudioTimeLabel} onOpenImage={onOpenImage} />
                         {message.body ? (
                             <MessageBody
                                 text={message.body}
@@ -1187,10 +1338,13 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                         ) : null}
                     </>
                 )}
-                <p className="app-muted mt-1 flex items-center justify-end gap-1 text-[11px]">
-                    <time>{formatMessageTimestamp(timestamp)}</time>
-                    <MessageStatusIndicator status={message.status} />
-                    {message.edited_at && !deleted ? ' · Editado' : ''}
+                <p className={`app-muted mt-1 flex items-center text-[11px] ${message.type === 'audio' ? 'justify-between gap-4' : 'justify-end gap-1'}`}>
+                    {message.type === 'audio' && audioTimeLabel !== null ? <span className="shrink-0 tabular-nums">{audioTimeLabel}</span> : null}
+                    <span className="flex min-w-0 items-center justify-end gap-1">
+                        <time>{formatMessageTimestamp(timestamp)}</time>
+                        <MessageStatusIndicator status={message.status} />
+                        {message.edited_at && !deleted ? ' · Editado' : ''}
+                    </span>
                 </p>
                 {message.status === 'failed' && message.error_message ? (
                     <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">
@@ -1346,7 +1500,7 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
     ) : part);
 }
 
-function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void }) {
+function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { message: MessageItem; onAudioTimeLabelChange?: (label: string) => void; onOpenImage: (image: ImagePreview) => void }) {
     if (message.type === 'text') {
         return null;
     }
@@ -1385,11 +1539,7 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
     }
 
     if (message.type === 'audio') {
-        return (
-            <audio controls className="mb-2 w-72 max-w-full">
-                <source src={message.media_url} type={message.media_mime_type ?? undefined} />
-            </audio>
-        );
+        return <AudioMessagePlayer message={message} onTimeLabelChange={onAudioTimeLabelChange} />;
     }
 
     return (
@@ -1398,6 +1548,95 @@ function MessageMedia({ message, onOpenImage }: { message: MessageItem; onOpenIm
             <span className="truncate">{message.media_filename ?? 'Documento adjunto'}</span>
             {message.media_size_bytes ? <span className="app-muted shrink-0 text-xs">{formatBytes(message.media_size_bytes)}</span> : null}
         </a>
+    );
+}
+
+function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageItem; onTimeLabelChange?: (label: string) => void }) {
+    const audioRef = useRef<HTMLAudioElement>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [duration, setDuration] = useState(() => audioMetadataDuration(message.media_metadata));
+    const [currentTime, setCurrentTime] = useState(0);
+    const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0;
+
+    useEffect(() => {
+        setIsPlaying(false);
+        setDuration(audioMetadataDuration(message.media_metadata));
+        setCurrentTime(0);
+    }, [message.media_metadata, message.media_url]);
+
+    useEffect(() => {
+        const audio = audioRef.current;
+
+        return () => {
+            audio?.pause();
+        };
+    }, []);
+
+    useEffect(() => {
+        onTimeLabelChange?.(formatAudioTime(isPlaying ? currentTime : duration));
+    }, [currentTime, duration, isPlaying, onTimeLabelChange]);
+
+    const updateDuration = (audio: HTMLAudioElement) => {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) {
+            setDuration(audio.duration);
+        }
+    };
+
+    const togglePlayback = () => {
+        const audio = audioRef.current;
+
+        if (!audio) {
+            return;
+        }
+
+        if (audio.paused) {
+            document.querySelectorAll<HTMLAudioElement>('audio[data-chat-audio="true"]').forEach((otherAudio) => {
+                if (otherAudio !== audio) {
+                    otherAudio.pause();
+                }
+            });
+
+            void audio.play();
+            return;
+        }
+
+        audio.pause();
+    };
+
+    return (
+        <div className="app-audio-player mb-1">
+            <audio
+                data-chat-audio="true"
+                ref={audioRef}
+                preload="metadata"
+                onLoadedMetadata={(event) => updateDuration(event.currentTarget)}
+                onLoadedData={(event) => updateDuration(event.currentTarget)}
+                onDurationChange={(event) => updateDuration(event.currentTarget)}
+                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onEnded={() => {
+                    setIsPlaying(false);
+                    setCurrentTime(0);
+                }}
+            >
+                <source src={message.media_url!} type={message.media_mime_type ?? undefined} />
+            </audio>
+            <button type="button" onClick={togglePlayback} className="app-audio-button" aria-label={isPlaying ? 'Pausar audio' : 'Reproducir audio'}>
+                {isPlaying ? <Pause className="size-4" /> : <Play className="size-4 translate-x-px" />}
+            </button>
+            <div className="min-w-0 flex-1">
+                <div className="app-audio-waveform" aria-hidden="true">
+                    {Array.from({ length: 24 }, (_, index) => (
+                        <span
+                            key={index}
+                            className={index / 23 <= progress ? 'app-audio-bar app-audio-bar-active' : 'app-audio-bar'}
+                            style={{ height: `${6 + ((index * 7) % 14)}px` }}
+                        />
+                    ))}
+                </div>
+            </div>
+        </div>
     );
 }
 
@@ -1593,6 +1832,10 @@ function compactQuery(query: Record<string, string | number | null | undefined>)
     ) as Record<string, string | number>;
 }
 
+function normalizeSearch(value: string): string {
+    return value.trim();
+}
+
 function conversationHref(chatId: string, filters: Props['filters']): string {
     const query = new URLSearchParams();
 
@@ -1668,16 +1911,47 @@ function formatMessageTimestamp(value: string | null): string {
     });
 }
 
+function audioMetadataDuration(metadata: Record<string, unknown> | null): number {
+    const rawDuration = metadata?.duration;
+
+    if (typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0) {
+        return rawDuration;
+    }
+
+    if (typeof rawDuration === 'string') {
+        const parsedDuration = Number(rawDuration);
+
+        if (Number.isFinite(parsedDuration) && parsedDuration > 0) {
+            return parsedDuration;
+        }
+    }
+
+    return 0;
+}
+
+function formatAudioTime(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) {
+        return '0:00';
+    }
+
+    const totalSeconds = Math.floor(value);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
 function MessageStatusIndicator({ status }: { status: string }) {
     const statusKey = status.toLowerCase();
     const statusLabels: Record<string, string> = {
-        accepted: 'Aceptado',
-        delivered: 'Entregado',
+        accepted: 'Enviado',
+        delivered: 'Enviado',
         failed: 'Fallido',
         pending: 'Pendiente',
-        read: 'Leído',
+        read: 'Enviado',
         received: 'Recibido',
-        seen: 'Visto',
+        seen: 'Enviado',
+        sent: 'Enviado',
     };
 
     if (statusKey === 'pending') {
@@ -1696,13 +1970,11 @@ function MessageStatusIndicator({ status }: { status: string }) {
         );
     }
 
-    const isRead = statusKey === 'read' || statusKey === 'seen';
-    const isDoubleCheck = isRead || statusKey === 'received' || statusKey === 'delivered';
     const label = statusLabels[statusKey] ?? status;
 
     return (
-        <span title={label} aria-label={label} role="img" className={`inline-flex items-center font-semibold tracking-[-0.18em] ${isRead ? 'text-sky-400' : 'text-(--app-faint)'}`}>
-            {isDoubleCheck ? '✓✓' : '✓'}
+        <span title={label} aria-label={label} className="inline-flex items-center font-medium text-(--app-faint)">
+            {label}
         </span>
     );
 }

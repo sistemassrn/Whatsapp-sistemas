@@ -257,6 +257,7 @@ it('downloads omitted media with the retry command', function () {
         'openwa.api_key' => 'testing-key',
         'openwa.base_url' => 'http://openwa.test/api',
         'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.recent_sync_window_hours' => 24,
     ]);
 
     $conversation = Conversation::query()->create([
@@ -312,6 +313,70 @@ it('downloads omitted media with the retry command', function () {
 
     Storage::disk('whatsapp_media')->assertExists($message->media_path);
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('retry-audio-bytes');
+});
+
+it('does not retry omitted media outside the recent sync window', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.api_key' => 'testing-key',
+        'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.recent_sync_window_hours' => 24,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-old',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'audio',
+        'status' => 'received',
+        'received_at' => now()->subHours(25),
+        'media_mime_type' => 'audio/ogg',
+        'media_filename' => 'old.ogg',
+        'media_download_status' => 'omitted',
+    ]);
+
+    Message::withoutTimestamps(function () use ($message): void {
+        $message->forceFill([
+            'created_at' => now()->subHours(25),
+            'updated_at' => now(),
+        ])->save();
+    });
+
+    Http::fake(function ($request) {
+        $url = rawurldecode(rawurldecode($request->url()));
+
+        if (str_contains($url, '/sessions/session-1/messages/5491100000000@c.us/wamid-retry-old/media')) {
+            return Http::response(['data' => base64_encode('old-audio-bytes')]);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
+            ]);
+        }
+
+        return Http::response([], 404);
+    });
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->expectsOutput('Intentados: 0')
+        ->assertSuccessful();
+
+    $message->refresh();
+
+    expect($message->media_download_status)->toBe('omitted')
+        ->and($message->media_path)->toBeNull();
 });
 
 it('stores webhook voice notes with ogg codec mime so they can be played', function () {

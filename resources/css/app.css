@@ -21,34 +21,34 @@
 @layer base {
     :root {
         color-scheme: dark;
-        --app-bg: #070a0c;
-        --app-surface: #12181b;
-        --app-surface-raised: #182125;
-        --app-surface-strong: #202b30;
-        --app-surface-soft: rgb(18 24 27 / 0.78);
-        --app-border: rgb(255 255 255 / 0.1);
-        --app-text: #f4f7f5;
-        --app-muted: #a7b0ad;
-        --app-faint: #77817e;
+        --app-bg: #0c1217;
+        --app-surface: #111b21;
+        --app-surface-raised: #202c33;
+        --app-surface-strong: #2a3942;
+        --app-surface-soft: rgb(32 44 51 / 0.82);
+        --app-border: #2a3942;
+        --app-text: #e9edef;
+        --app-muted: #aebac1;
+        --app-faint: #8696a0;
         --app-accent: #00a884;
-        --app-accent-strong: #06cf9c;
+        --app-accent-strong: #03c79d;
         --app-accent-contrast: #ffffff;
-        --app-danger: #f87171;
-        --app-danger-bg: rgb(127 29 29 / 0.38);
-        --app-danger-border: rgb(248 113 113 / 0.35);
-        --app-success: #86efac;
-        --app-success-bg: rgb(20 83 45 / 0.36);
-        --app-success-border: rgb(74 222 128 / 0.32);
-        --app-chat-in: #192126;
-        --app-chat-out: #075e54;
-        --app-chat-out-border: rgb(0 168 132 / 0.45);
-        --app-chat-bg: #0b1113;
+        --app-danger: #ff6b6b;
+        --app-danger-bg: rgb(122 27 27 / 0.34);
+        --app-danger-border: rgb(255 107 107 / 0.32);
+        --app-success: #25d366;
+        --app-success-bg: rgb(0 92 75 / 0.38);
+        --app-success-border: rgb(37 211 102 / 0.28);
+        --app-chat-in: #202c33;
+        --app-chat-out: #005c4b;
+        --app-chat-out-border: rgb(0 168 132 / 0.32);
+        --app-chat-bg: #0b141a;
         --app-focus: #00a884;
-        --app-control-bg: var(--app-surface);
+        --app-control-bg: #2a3942;
         --app-control-text: var(--app-text);
-        --app-control-border: rgb(255 255 255 / 0.14);
+        --app-control-border: #3b4a54;
         --app-control-hover: var(--app-surface-strong);
-        --chat-background-overlay: rgba(7, 10, 12, 0.78);
+        --chat-background-overlay: rgba(11, 20, 26, 0.86);
     }
 
     :root[data-theme='light'] {
@@ -251,6 +251,108 @@
     .app-message-bubble-out {
         border-color: var(--app-chat-out-border);
         background-color: var(--app-chat-out);
+    }
+
+    .app-audio-player {
+        display: flex;
+        width: min(21rem, 100%);
+        align-items: center;
+        gap: 0.55rem;
+        border-radius: 0.75rem;
+        border: 1px solid color-mix(in srgb, var(--app-border) 34%, transparent);
+        background: color-mix(in srgb, var(--app-surface-soft) 18%, transparent);
+        padding: 0.25rem 0.45rem 0.25rem 0.3rem;
+    }
+
+    .app-audio-button {
+        display: grid;
+        width: 2rem;
+        height: 2rem;
+        flex-shrink: 0;
+        place-items: center;
+        border-radius: 999px;
+        background-color: var(--app-accent);
+        color: var(--app-accent-contrast);
+        transition: background-color 150ms ease, transform 150ms ease;
+    }
+
+    .app-audio-button:hover {
+        background-color: var(--app-accent-strong);
+        transform: scale(1.03);
+    }
+
+    .app-audio-waveform {
+        display: flex;
+        height: 1.45rem;
+        align-items: center;
+        gap: 0.125rem;
+    }
+
+    .app-audio-bar {
+        width: 0.16rem;
+        border-radius: 999px;
+        background-color: color-mix(in srgb, var(--app-muted) 42%, transparent);
+        transition: background-color 120ms ease, opacity 120ms ease;
+    }
+
+    .app-audio-bar-active {
+        background-color: var(--app-accent);
+    }
+
+    .app-image-group {
+        display: grid;
+        width: min(21rem, 62vw);
+        max-width: 100%;
+        gap: 0.1875rem;
+        overflow: hidden;
+        border-radius: 0.75rem;
+    }
+
+    .app-image-group-2,
+    .app-image-group-4 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .app-image-group-3 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .app-image-group-item {
+        position: relative;
+        display: block;
+        min-height: 7.5rem;
+        overflow: hidden;
+        background-color: color-mix(in srgb, var(--app-surface-strong) 82%, black);
+        text-align: left;
+    }
+
+    .app-image-group-item-large {
+        grid-column: 1 / -1;
+        min-height: 12rem;
+    }
+
+    .app-image-group-item img {
+        width: 100%;
+        height: 100%;
+        min-height: inherit;
+        object-fit: cover;
+        transition: filter 150ms ease, transform 150ms ease;
+    }
+
+    .app-image-group-item:hover img {
+        filter: brightness(1.08);
+        transform: scale(1.015);
+    }
+
+    .app-image-group-more {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background-color: rgb(0 0 0 / 0.48);
+        color: white;
+        font-size: 1.75rem;
+        font-weight: 700;
     }
 
     .app-read-more {

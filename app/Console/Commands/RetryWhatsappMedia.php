@@ -38,6 +38,9 @@ class RetryWhatsappMedia extends Command
 
         $limit = max(1, (int) $this->option('limit'));
         $minutes = max(1, (int) $this->option('minutes'));
+        $recentCutoff = now()
+            ->subHours(max(1, (int) config('openwa.recent_sync_window_hours', 24)))
+            ->format('Ymd H:i:s.v');
 
         Message::query()
             ->with('conversation')
@@ -46,6 +49,7 @@ class RetryWhatsappMedia extends Command
             ->whereNull('media_path')
             ->whereNotNull('external_id')
             ->where('updated_at', '>=', now()->subMinutes($minutes)->format('Ymd H:i:s.v'))
+            ->whereRaw('COALESCE(sent_at, received_at, created_at) >= ?', [$recentCutoff])
             ->oldest('updated_at')
             ->limit($limit)
             ->get()

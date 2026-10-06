@@ -10,6 +10,7 @@ beforeEach(function () {
         'openwa.api_key' => 'testing-key',
         'openwa.base_url' => 'http://openwa.test/api',
         'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.recent_sync_window_hours' => 24,
     ]);
 });
 
@@ -300,7 +301,7 @@ it('downloads omitted media while syncing recent history', function () {
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('sync-image-bytes');
 });
 
-it('skips chats whose chat and message activity are older than the import max age', function () {
+it('skips chats whose chat and message activity are older than the recent sync window', function () {
     Http::fake(function ($request) {
         $url = rawurldecode(rawurldecode($request->url()));
 
@@ -311,7 +312,7 @@ it('skips chats whose chat and message activity are older than the import max ag
                     'chatId' => '5494444444444@c.us',
                     'fromMe' => false,
                     'body' => 'Mensaje viejo',
-                    'timestamp' => now()->subDays(241)->timestamp,
+                    'timestamp' => now()->subHours(25)->timestamp,
                 ]],
             ]);
         }
@@ -321,7 +322,7 @@ it('skips chats whose chat and message activity are older than the import max ag
                 'data' => [[
                     'id' => '5494444444444@c.us',
                     'name' => 'Cliente Viejo',
-                    'timestamp' => now()->subDays(241)->timestamp,
+                    'timestamp' => now()->subHours(25)->timestamp,
                 ]],
             ]);
         }
@@ -345,7 +346,7 @@ it('skips chats whose chat and message activity are older than the import max ag
         ->and(Message::query()->where('external_id', 'wamid-old-sync')->exists())->toBeFalse();
 });
 
-it('keeps saved contacts even when their messages are older than the import max age', function () {
+it('keeps saved contacts even when their messages are older than the recent sync window', function () {
     Http::fake(function ($request) {
         $url = rawurldecode(rawurldecode($request->url()));
 
@@ -356,7 +357,7 @@ it('keeps saved contacts even when their messages are older than the import max 
                     'chatId' => '5496666666666@c.us',
                     'fromMe' => false,
                     'body' => 'Mensaje viejo guardado',
-                    'timestamp' => now()->subDays(241)->timestamp,
+                    'timestamp' => now()->subHours(25)->timestamp,
                 ]],
             ]);
         }
@@ -367,7 +368,7 @@ it('keeps saved contacts even when their messages are older than the import max 
                     'id' => '5496666666666@c.us',
                     'name' => 'Cliente Guardado',
                     'isSaved' => true,
-                    'timestamp' => now()->subDays(241)->timestamp,
+                    'timestamp' => now()->subHours(25)->timestamp,
                     'contact' => [
                         'id' => '5496666666666@c.us',
                         'pushName' => 'Guardado',

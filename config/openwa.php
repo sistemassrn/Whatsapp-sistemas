@@ -17,6 +17,8 @@ return [
 
     'import_max_age_days' => (int) env('OPENWA_IMPORT_MAX_AGE_DAYS', 150),
 
+    'recent_sync_window_hours' => (int) env('OPENWA_RECENT_SYNC_WINDOW_HOURS', 24),
+
     'import_unknown_historical_chats' => (bool) env('OPENWA_IMPORT_UNKNOWN_HISTORICAL_CHATS', false),
 
     'sync_recent' => [

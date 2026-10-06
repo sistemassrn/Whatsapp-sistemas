@@ -66,6 +66,11 @@ class WhatsappHistoricalImportFilter
         return now()->subDays(max(1, (int) config('openwa.import_max_age_days', 240)));
     }
 
+    public function recentSyncCutoff(): CarbonInterface
+    {
+        return now()->subHours(max(1, (int) config('openwa.recent_sync_window_hours', 24)));
+    }
+
     /**
      * @param  array<string, mixed>  $chat
      */

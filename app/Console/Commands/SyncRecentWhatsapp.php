@@ -37,7 +37,7 @@ class SyncRecentWhatsapp extends Command
         $sessionName = (string) config('openwa.session_name');
         $limitChats = max(1, (int) $this->option('limit-chats'));
         $limitMessages = max(1, (int) $this->option('limit-messages'));
-        $syncCutoff = $filter->syncCutoff();
+        $syncCutoff = $filter->recentSyncCutoff();
 
         if ($sessionName === '') {
             $this->info('No hay sesión configurada.');
