@@ -569,8 +569,8 @@ function MaintenanceModal({
                 <div className="mt-5 space-y-2 rounded-2xl border border-(--app-border) bg-(--app-surface-soft) p-4 text-sm leading-6">
                     <p className={isRunning ? 'font-medium text-green-600 dark:text-green-300' : 'font-medium'}>{maintenanceStatusDescription(maintenance.status)}</p>
                     <p>{maintenanceScheduleDescription(maintenance.scheduler)}</p>
-                    <p>{maintenance.started_at ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}.` : 'Todavía no hay fecha de inicio registrada.'}</p>
-                    <p>{maintenance.finished_at ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}.` : 'Todavía no hay fecha de finalización registrada.'}</p>
+                    <p>{maintenance.started_at ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}` : 'Todavía no hay fecha de inicio registrada.'}</p>
+                    <p>{maintenance.finished_at ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}` : 'Todavía no hay fecha de finalización registrada.'}</p>
                 </div>
 
                 {maintenance.error ? (
@@ -2213,7 +2213,7 @@ function maintenanceStatusDescription(status: string | null): string {
     }
 
     if (status === 'success') {
-        return 'La última sincronización terminó correctamente.';
+        return 'La última sincronización finalizó correctamente.';
     }
 
     if (status === 'failed') {
