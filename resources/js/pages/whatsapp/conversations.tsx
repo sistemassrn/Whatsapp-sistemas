@@ -179,6 +179,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const incomingMessageSeenKeysRef = useRef<Set<string>>(new Set());
     const incomingMessageSoundLastPlayedAtRef = useRef(0);
     const incomingMessageSoundStartedAtRef = useRef(Date.now() - 30000);
+    const conversationListRef = useRef<HTMLDivElement>(null);
     const disconnectForm = useForm({});
     const logoutForm = useForm({});
     const syncMaintenanceForm = useForm({});
@@ -382,6 +383,31 @@ export default function Conversations({ operator, conversations, selectedChatId,
         });
     }
 
+    function openConversation(chatId: string) {
+        const conversationListScrollTop = conversationListRef.current?.scrollTop ?? 0;
+
+        router.get(
+            '/whatsapp/conversations',
+            compactQuery({
+                chat: chatId,
+                chat_search: filters.chat_search,
+            }),
+            {
+                only: INBOX_RELOAD_PROPS,
+                preserveScroll: true,
+                preserveState: true,
+                replace: true,
+                onFinish: () => {
+                    window.requestAnimationFrame(() => {
+                        if (conversationListRef.current) {
+                            conversationListRef.current.scrollTop = conversationListScrollTop;
+                        }
+                    });
+                },
+            },
+        );
+    }
+
     return (
         <>
             <Head title="Chats" />
@@ -434,7 +460,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                             </div> */}
                         </div>
 
-                        <div className="min-h-0 flex-1 overflow-y-auto">
+                        <div ref={conversationListRef} className="min-h-0 flex-1 overflow-y-auto">
                             {conversations.length === 0 ? (
                                 <p className="app-muted p-4 text-sm leading-6">
                                     {emptyState ?? 'No hay conversaciones para mostrar todavía.'}
@@ -446,6 +472,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                         conversation={conversation}
                                         active={selectedChatId === conversation.external_id}
                                         filters={filters}
+                                        onSelect={openConversation}
                                     />
                                 ))
                             )}
@@ -531,23 +558,20 @@ function MaintenanceModal({
             <section ref={modalRef} className="app-surface w-full max-w-lg rounded-3xl border p-5 shadow-2xl shadow-black/30" role="dialog" aria-modal="true" aria-labelledby="maintenance-title">
                 <header className="flex items-start justify-between gap-4">
                     <div>
-                        <h2 id="maintenance-title" className="text-lg font-semibold">Mantenimiento</h2>
-                        <p className="app-muted mt-1 text-sm">Sincronización con WhatsApp.</p>
+                        <h2 id="maintenance-title" className="text-lg font-semibold">Sincronización</h2>
+                        <p className="app-muted mt-1 text-sm">Revisa mensajes de las últimas {maintenance.recent_sync_window_hours} h y reintenta multimedia de las últimas {maintenance.retry_media_window_hours} h.</p>
                     </div>
-                    <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label="Cerrar mantenimiento">
+                    <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label="Cerrar sincronización">
                         <X className="size-4" />
                     </button>
                 </header>
 
-                <dl className="mt-5 grid gap-3 rounded-2xl border border-(--app-border) bg-(--app-surface-soft) p-4 text-sm sm:grid-cols-2">
-                    <MaintenanceStatus label="Estado" value={maintenanceStatusLabel(maintenance.status)} highlight={isRunning} />
-                    <MaintenanceStatus label="Último inicio" value={formatDateTime(maintenance.started_at)} />
-                    <MaintenanceStatus label="Último fin" value={formatDateTime(maintenance.finished_at)} />
-                    <MaintenanceStatus label="Programación" value={maintenance.scheduler} />
-                    <MaintenanceStatus label="Ventana mensajes" value={`${maintenance.recent_sync_window_hours} h`} />
-                    <MaintenanceStatus label="Ventana medios" value={`${maintenance.retry_media_window_hours} h`} />
-                    {/* <MaintenanceStatus label="Tiempo de medios" value={`${maintenance.retry_media_cooldown_hours} h`} /> */}
-                </dl>
+                <div className="mt-5 space-y-2 rounded-2xl border border-(--app-border) bg-(--app-surface-soft) p-4 text-sm leading-6">
+                    <p className={isRunning ? 'font-medium text-green-600 dark:text-green-300' : 'font-medium'}>{maintenanceStatusDescription(maintenance.status)}</p>
+                    <p>{maintenanceScheduleDescription(maintenance.scheduler)}</p>
+                    <p>{maintenance.started_at ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}.` : 'Todavía no hay fecha de inicio registrada.'}</p>
+                    <p>{maintenance.finished_at ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}.` : 'Todavía no hay fecha de finalización registrada.'}</p>
+                </div>
 
                 {maintenance.error ? (
                     <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-200">
@@ -563,12 +587,12 @@ function MaintenanceModal({
                         </button>
                     </form>
                     <form onSubmit={onDisconnect}>
-                        <button type="submit" disabled={disconnecting} className="app-button-danger w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
-                            Cambiar sesión
+                        <button type="submit" disabled={disconnecting} className="app-button w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                            Cambiar cuenta
                         </button>
                     </form>
                     <form onSubmit={onLogout}>
-                        <button type="submit" disabled={loggingOut} className="app-button w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                        <button type="submit" disabled={loggingOut} className="app-button-danger w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
                             Cerrar sesión
                         </button>
                     </form>
@@ -578,16 +602,7 @@ function MaintenanceModal({
     );
 }
 
-function MaintenanceStatus({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
-    return (
-        <div>
-            <dt className="app-faint text-xs font-semibold uppercase tracking-wide">{label}</dt>
-            <dd className={`mt-1 font-medium ${highlight ? 'text-green-600 dark:text-green-300' : ''}`}>{value}</dd>
-        </div>
-    );
-}
-
-function ConversationRow({ conversation, active, filters }: { conversation: ConversationItem; active: boolean; filters: Props['filters'] }) {
+function ConversationRow({ conversation, active, filters, onSelect }: { conversation: ConversationItem; active: boolean; filters: Props['filters']; onSelect: (chatId: string) => void }) {
     const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
     const [avatarPreview, setAvatarPreview] = useState<ImagePreview | null>(null);
     const [menuOpen, setMenuOpen] = useState(false);
@@ -701,7 +716,14 @@ function ConversationRow({ conversation, active, filters }: { conversation: Conv
                     )}
                 </div>
 
-                <a href={conversationHref(conversation.external_id, filters)} className="min-w-0 flex-1 pr-14">
+                <a
+                    href={conversationHref(conversation.external_id, filters)}
+                    onClick={(event) => {
+                        event.preventDefault();
+                        onSelect(conversation.external_id);
+                    }}
+                    className="min-w-0 flex-1 pr-14"
+                >
                     <div className="flex items-start justify-between gap-3">
                         <p className="truncate text-sm font-semibold">{title}</p>
                         <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">{formatConversationTimestamp(conversation.last_message_at)}</time>
@@ -790,6 +812,7 @@ function MessagePanel({
     const isLoadingOlderRef = useRef(false);
     const previousScrollHeightRef = useRef(0);
     const previousScrollTopRef = useRef(0);
+    const keepScrolledToBottomRef = useRef(false);
     const [isLoadingOlder, setIsLoadingOlder] = useState(false);
     const [messageSearch, setMessageSearch] = useState('');
     const [activeMatchIndex, setActiveMatchIndex] = useState(0);
@@ -888,9 +911,11 @@ function MessagePanel({
         if (isLoadingOlderRef.current) {
             scrollContainer.scrollTop = scrollContainer.scrollHeight - previousScrollHeightRef.current + previousScrollTopRef.current;
             isLoadingOlderRef.current = false;
+            keepScrolledToBottomRef.current = false;
             setIsLoadingOlder(false);
         } else if (chatChanged || latestMessageChanged) {
             scrollContainer.scrollTop = scrollContainer.scrollHeight;
+            keepScrolledToBottomRef.current = true;
         }
 
         previousChatIdRef.current = conversation.external_id;
@@ -932,9 +957,33 @@ function MessagePanel({
     const handleMessagesScroll = () => {
         const scrollContainer = scrollContainerRef.current;
 
-        if (scrollContainer && scrollContainer.scrollTop <= 80) {
+        if (!scrollContainer) {
+            return;
+        }
+
+        const distanceFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+
+        if (distanceFromBottom > 80) {
+            keepScrolledToBottomRef.current = false;
+        }
+
+        if (scrollContainer.scrollTop <= 80) {
             loadOlderMessages();
         }
+    };
+
+    const keepMessagesAtBottom = () => {
+        const scrollContainer = scrollContainerRef.current;
+
+        if (!scrollContainer || isLoadingOlderRef.current || !keepScrolledToBottomRef.current) {
+            return;
+        }
+
+        window.requestAnimationFrame(() => {
+            if (scrollContainerRef.current && keepScrolledToBottomRef.current && !isLoadingOlderRef.current) {
+                scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+            }
+        });
     };
 
     const submitMessage = (event: FormEvent<HTMLFormElement>) => {
@@ -1142,6 +1191,7 @@ function MessagePanel({
             <div
                 ref={scrollContainerRef}
                 onScroll={handleMessagesScroll}
+                onLoadCapture={keepMessagesAtBottom}
                 onDragEnter={(event) => {
                     if (event.dataTransfer.types.includes('Files')) {
                         setIsDraggingFiles(true);
@@ -2157,25 +2207,59 @@ function SearchForm({
     );
 }
 
-function maintenanceStatusLabel(status: string | null): string {
+function maintenanceStatusDescription(status: string | null): string {
     if (status === 'running') {
-        return 'En curso';
+        return 'La sincronización está en curso.';
     }
 
     if (status === 'success') {
-        return 'Correcta';
+        return 'La última sincronización terminó correctamente.';
     }
 
     if (status === 'failed') {
-        return 'Fallida';
+        return 'La última sincronización falló.';
     }
 
-    return 'Sin ejecuciones';
+    return 'Todavía no hay sincronizaciones registradas.';
 }
 
-function formatDateTime(value: string | null): string {
+function maintenanceScheduleDescription(scheduler: string): string {
+    return scheduler.toLocaleLowerCase() === 'manual'
+        ? 'Se ejecutó manualmente.'
+        : `Se ejecuta ${scheduler}`;
+}
+
+function formatMaintenanceDateTime(value: string): string {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    const formattedDate = formatDate(value, {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+    });
+
+    const formattedTime = formatTime(value, true);
+
+    return `${formattedDate}, a las ${formattedTime}`;
+}
+
+function formatDate(value: string, options: Intl.DateTimeFormatOptions): string {
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return date.toLocaleDateString('es-AR', options);
+}
+
+function formatTime(value: string, includeSeconds = false): string {
     if (!value) {
-        return 'Sin datos';
+        return '';
     }
 
     const date = new Date(value);
@@ -2184,12 +2268,11 @@ function formatDateTime(value: string | null): string {
         return value;
     }
 
-    return date.toLocaleString('es-AR', {
-        day: '2-digit',
-        month: '2-digit',
-        year: 'numeric',
-        hour: '2-digit',
+    return date.toLocaleTimeString('es-AR', {
+        hour: 'numeric',
         minute: '2-digit',
+        second: includeSeconds ? '2-digit' : undefined,
+        hour12: true,
     });
 }
 
@@ -2262,13 +2345,10 @@ function formatConversationTimestamp(value: string | null): string {
     }
 
     if (date.toDateString() === new Date().toDateString()) {
-        return date.toLocaleTimeString('es-AR', {
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+        return formatTime(value);
     }
 
-    return date.toLocaleDateString('es-AR', {
+    return formatDate(value, {
         day: '2-digit',
         month: '2-digit',
         year: 'numeric',
@@ -2286,10 +2366,7 @@ function formatMessageTimestamp(value: string | null): string {
         return value;
     }
 
-    return date.toLocaleTimeString('es-AR', {
-        hour: '2-digit',
-        minute: '2-digit',
-    });
+    return formatTime(value);
 }
 
 function formatMessageDateDivider(value: string | null): string {

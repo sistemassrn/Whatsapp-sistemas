@@ -255,7 +255,7 @@ class WhatsappConversationsController extends Controller
             'recent_sync_window_hours' => (int) config('openwa.recent_sync_window_hours'),
             'retry_media_window_hours' => (int) config('openwa.retry_media_window_hours'),
             'retry_media_cooldown_hours' => (int) config('openwa.retry_media_cooldown_hours'),
-            'scheduler' => 'Todos los días a las 7:00',
+            'scheduler' => 'todos los días a las 7:00 a. m.',
         ];
     }
 
