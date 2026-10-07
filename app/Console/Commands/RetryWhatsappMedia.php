@@ -10,11 +10,14 @@ use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Facades\Storage;
 
 #[Signature('whatsapp:retry-media {--limit=50} {--minutes=1440}')]
 #[Description('Retry pending WhatsApp media downloads')]
 class RetryWhatsappMedia extends Command
 {
+    private const PERMANENT_MEDIA_ERROR = 'Tipo de archivo no permitido.';
+
     private int $attempted = 0;
 
     private int $stored = 0;
@@ -41,36 +44,68 @@ class RetryWhatsappMedia extends Command
         $retryMediaCutoff = now()
             ->subHours(max(1, (int) config('openwa.retry_media_window_hours', 240)))
             ->format('Ymd H:i:s.v');
+        $cooldownCutoff = now()->subHours(max(1, (int) config('openwa.retry_media_cooldown_hours', 6)));
+        $updatedAtCutoff = now()->subMinutes($minutes);
 
-        Message::query()
+        $messages = Message::query()
             ->with('conversation')
-            ->whereIn('media_download_status', ['omitted', 'pending', 'failed'])
             ->whereIn('type', ['image', 'audio', 'video', 'document'])
-            ->whereNull('media_path')
             ->whereNotNull('external_id')
-            ->where('updated_at', '>=', now()->subMinutes($minutes)->format('Ymd H:i:s.v'))
+            ->where('updated_at', '>=', $updatedAtCutoff)
             ->whereRaw('COALESCE(sent_at, received_at, created_at) >= ?', [$retryMediaCutoff])
+            ->where(function ($query): void {
+                $query->whereNull('media_error')
+                    ->orWhere('media_error', '!=', self::PERMANENT_MEDIA_ERROR);
+            })
+            ->where(function ($query) use ($cooldownCutoff): void {
+                $query->where(function ($query) use ($cooldownCutoff): void {
+                    $query->whereIn('media_download_status', ['omitted', 'pending', 'failed'])
+                        ->whereNull('media_path')
+                        ->where(function ($query) use ($cooldownCutoff): void {
+                            $query->whereNull('media_error')
+                                ->orWhere('updated_at', '<=', $cooldownCutoff);
+                        });
+                })->orWhere(function ($query): void {
+                    $query->where('media_download_status', 'stored')
+                        ->where('media_disk', 'whatsapp_media')
+                        ->whereNotNull('media_path');
+                });
+            })
             ->orderByRaw('COALESCE(sent_at, received_at, created_at) DESC')
-            ->limit($limit)
-            ->get()
-            ->each(function (Message $message) use ($mediaDownloader, $sessionId): void {
-                $chatId = $message->conversation->external_id ?? null;
+            ->lazy();
 
-                if (! is_string($chatId) || trim($chatId) === '') {
+        foreach ($messages as $message) {
+            if ($this->attempted >= $limit) {
+                break;
+            }
+
+            if ($message->media_download_status === 'stored') {
+                if ($this->storedFileExists($message)) {
                     $this->skipped++;
 
-                    return;
+                    continue;
                 }
 
-                $this->attempted++;
-                $downloaded = $mediaDownloader->attempt($message, $sessionId, $chatId, ['source' => 'retry-media']);
+                $this->markStoredFileMissing($message);
+            }
 
-                if ($downloaded) {
-                    $this->stored++;
-                } else {
-                    $this->failed++;
-                }
-            });
+            $chatId = $message->conversation->external_id ?? null;
+
+            if (! is_string($chatId) || trim($chatId) === '') {
+                $this->skipped++;
+
+                continue;
+            }
+
+            $this->attempted++;
+            $downloaded = $mediaDownloader->attempt($message, $sessionId, $chatId, ['source' => 'retry-media']);
+
+            if ($downloaded) {
+                $this->stored++;
+            } else {
+                $this->failed++;
+            }
+        }
 
         $this->info("Intentados: {$this->attempted}");
         $this->info("Guardados: {$this->stored}");
@@ -78,6 +113,23 @@ class RetryWhatsappMedia extends Command
         $this->info("Omitidos: {$this->skipped}");
 
         return self::SUCCESS;
+    }
+
+    private function storedFileExists(Message $message): bool
+    {
+        return is_string($message->media_path)
+            && $message->media_path !== ''
+            && Storage::disk('whatsapp_media')->exists($message->media_path);
+    }
+
+    private function markStoredFileMissing(Message $message): void
+    {
+        $message->forceFill([
+            'media_disk' => null,
+            'media_path' => null,
+            'media_download_status' => 'failed',
+            'media_error' => 'Archivo local no encontrado.',
+        ])->save();
     }
 
     private function readySessionId(OpenWaClient $client): ?string

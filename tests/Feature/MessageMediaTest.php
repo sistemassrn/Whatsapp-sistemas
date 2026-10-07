@@ -319,6 +319,263 @@ it('downloads omitted media with the retry command', function () {
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('retry-audio-bytes');
 });
 
+it('retries stored media with the retry command when the local file is missing', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.api_key' => 'testing-key',
+        'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+        'openwa.retry_media_cooldown_hours' => 6,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-missing-file',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHour(),
+        'media_disk' => 'whatsapp_media',
+        'media_path' => 'inbound/test/missing.jpg',
+        'media_mime_type' => 'image/jpeg',
+        'media_filename' => 'missing.jpg',
+        'media_download_status' => 'stored',
+    ]);
+
+    Http::fake(function ($request) {
+        $url = rawurldecode(rawurldecode($request->url()));
+
+        if (str_contains($url, '/sessions/session-1/messages/5491100000000@c.us/wamid-retry-missing-file/media')) {
+            return Http::response([
+                'data' => base64_encode('recovered-image-bytes'),
+                'mimetype' => 'image/jpeg',
+                'filename' => 'recovered.jpg',
+            ]);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
+            ]);
+        }
+
+        return Http::response([], 404);
+    });
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->expectsOutput('Intentados: 1')
+        ->expectsOutput('Guardados: 1')
+        ->assertSuccessful();
+
+    $message = Message::query()->where('external_id', 'wamid-retry-missing-file')->firstOrFail();
+
+    expect($message->media_download_status)->toBe('stored')
+        ->and($message->media_error)->toBeNull()
+        ->and($message->media_path)->not->toBe('inbound/test/missing.jpg');
+
+    Storage::disk('whatsapp_media')->assertExists($message->media_path);
+    expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('recovered-image-bytes');
+});
+
+it('skips stored media with the retry command when the local file exists', function () {
+    Storage::fake('whatsapp_media');
+    Storage::disk('whatsapp_media')->put('inbound/test/existing.jpg', 'existing-image-bytes');
+    config([
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-existing-file',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHour(),
+        'media_disk' => 'whatsapp_media',
+        'media_path' => 'inbound/test/existing.jpg',
+        'media_mime_type' => 'image/jpeg',
+        'media_filename' => 'existing.jpg',
+        'media_download_status' => 'stored',
+    ]);
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            throw new RuntimeException('Existing stored media should not be retried.');
+        }
+    });
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->expectsOutput('Intentados: 0')
+        ->expectsOutput('Omitidos: 1')
+        ->assertSuccessful();
+
+    expect($message->refresh()->media_download_status)->toBe('stored')
+        ->and($message->media_path)->toBe('inbound/test/existing.jpg');
+});
+
+it('applies the retry media cooldown only to recent media errors', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+        'openwa.retry_media_cooldown_hours' => 6,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $recentMessage = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-recent-error',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHour(),
+        'media_download_status' => 'failed',
+        'media_error' => 'Archivo no disponible.',
+    ]);
+    $olderMessage = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-old-error',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHours(2),
+        'media_download_status' => 'failed',
+        'media_error' => 'Archivo no disponible.',
+    ]);
+
+    Message::withoutTimestamps(function () use ($recentMessage, $olderMessage): void {
+        $recentMessage->forceFill(['updated_at' => now()->subHour()])->save();
+        $olderMessage->forceFill(['updated_at' => now()->subHours(7)])->save();
+    });
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            $message->forceFill([
+                'media_download_status' => 'stored',
+                'media_error' => null,
+            ])->save();
+
+            return true;
+        }
+    });
+
+    expect(Artisan::call('whatsapp:retry-media', [
+        '--limit' => 10,
+        '--minutes' => 1440,
+    ]))->toBe(0);
+
+    expect(Artisan::output())->toContain('Intentados: 1');
+
+    expect($recentMessage->refresh()->media_download_status)->toBe('failed')
+        ->and($olderMessage->refresh()->media_download_status)->toBe('stored');
+});
+
+it('excludes permanent media type errors from the retry command', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+        'openwa.retry_media_cooldown_hours' => 6,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-permanent-error',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHour(),
+        'media_download_status' => 'failed',
+        'media_error' => 'Tipo de archivo no permitido.',
+    ]);
+
+    Message::withoutTimestamps(function () use ($message): void {
+        $message->forceFill(['updated_at' => now()->subHours(7)])->save();
+    });
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            throw new RuntimeException('Permanent media errors should not be retried.');
+        }
+    });
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->expectsOutput('Intentados: 0')
+        ->assertSuccessful();
+
+    expect($message->refresh()->media_download_status)->toBe('failed')
+        ->and($message->media_error)->toBe('Tipo de archivo no permitido.');
+});
+
 it('does not retry omitted media outside the retry media window', function () {
     Storage::fake('whatsapp_media');
     config([

@@ -1332,18 +1332,13 @@ function ImageGroupBubble({ messages, onOpenImage, refCallback }: { messages: Me
                         const isLastVisible = index === visibleMessages.length - 1;
 
                         return (
-                            <button
+                            <ImageGroupItem
                                 key={message.id}
-                                type="button"
-                                onClick={() => onOpenImage({ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
-                                className={`app-image-group-item ${messages.length === 3 && index === 0 ? 'app-image-group-item-large' : ''}`}
-                                aria-label="Abrir imagen"
-                            >
-                                <img src={message.media_url!} alt={message.media_filename ?? 'Imagen adjunta'} loading="lazy" />
-                                {hiddenCount > 0 && isLastVisible ? (
-                                    <span className="app-image-group-more">+{hiddenCount}</span>
-                                ) : null}
-                            </button>
+                                message={message}
+                                className={messages.length === 3 && index === 0 ? 'app-image-group-item-large' : ''}
+                                hiddenCount={hiddenCount > 0 && isLastVisible ? hiddenCount : 0}
+                                onOpenImage={onOpenImage}
+                            />
                         );
                     })}
                 </div>
@@ -1353,6 +1348,35 @@ function ImageGroupBubble({ messages, onOpenImage, refCallback }: { messages: Me
                 </p>
             </div>
         </article>
+    );
+}
+
+function ImageGroupItem({ message, className, hiddenCount, onOpenImage }: { message: MessageItem; className: string; hiddenCount: number; onOpenImage: (image: ImagePreview) => void }) {
+    const [imageLoadFailed, setImageLoadFailed] = useState(false);
+
+    useEffect(() => {
+        setImageLoadFailed(false);
+    }, [message.media_url]);
+
+    if (imageLoadFailed || !message.media_url) {
+        return (
+            <div className={`app-image-group-item ${className}`}>
+                <ImageUnavailableFallback compact />
+                {hiddenCount > 0 ? <span className="app-image-group-more">+{hiddenCount}</span> : null}
+            </div>
+        );
+    }
+
+    return (
+        <button
+            type="button"
+            onClick={() => onOpenImage({ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
+            className={`app-image-group-item ${className}`}
+            aria-label="Abrir imagen"
+        >
+            <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} loading="lazy" onError={() => setImageLoadFailed(true)} />
+            {hiddenCount > 0 ? <span className="app-image-group-more">+{hiddenCount}</span> : null}
+        </button>
     );
 }
 
@@ -1629,6 +1653,12 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
 }
 
 function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { message: MessageItem; onAudioTimeLabelChange?: (label: string) => void; onOpenImage: (image: ImagePreview) => void }) {
+    const [imageLoadFailed, setImageLoadFailed] = useState(false);
+
+    useEffect(() => {
+        setImageLoadFailed(false);
+    }, [message.media_url]);
+
     if (message.type === 'text') {
         return null;
     }
@@ -1646,6 +1676,10 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
     }
 
     if (message.type === 'image') {
+        if (imageLoadFailed) {
+            return <ImageUnavailableFallback />;
+        }
+
         return (
             <button
                 type="button"
@@ -1653,7 +1687,7 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
                 className="mb-2 block overflow-hidden rounded-lg text-left"
                 aria-label="Abrir imagen"
             >
-                <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} className="max-h-80 object-contain transition hover:brightness-110" loading="lazy" />
+                <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} className="max-h-80 object-contain transition hover:brightness-110" loading="lazy" onError={() => setImageLoadFailed(true)} />
             </button>
         );
     }
@@ -1676,6 +1710,15 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
             <span className="truncate">{message.media_filename ?? 'Documento adjunto'}</span>
             {message.media_size_bytes ? <span className="app-muted shrink-0 text-xs">{formatBytes(message.media_size_bytes)}</span> : null}
         </a>
+    );
+}
+
+function ImageUnavailableFallback({ compact = false }: { compact?: boolean }) {
+    return (
+        <div className={`app-image-fallback ${compact ? 'app-image-fallback-compact' : 'mb-2 rounded-lg border px-4 py-6'}`} role="img" aria-label="Imagen no disponible">
+            <p className="font-semibold">Imagen no disponible</p>
+            <p className="mt-1 text-xs">No pudimos cargar el archivo.</p>
+        </div>
     );
 }
 
