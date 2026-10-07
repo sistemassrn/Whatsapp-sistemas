@@ -66,6 +66,8 @@ class WhatsappMessageMediaDownloader
             }
 
             if ($download === null) {
+                $this->markRetriable($message, 'Archivo no disponible.');
+
                 return false;
             }
         }

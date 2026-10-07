@@ -38,8 +38,8 @@ class RetryWhatsappMedia extends Command
 
         $limit = max(1, (int) $this->option('limit'));
         $minutes = max(1, (int) $this->option('minutes'));
-        $recentCutoff = now()
-            ->subHours(max(1, (int) config('openwa.recent_sync_window_hours', 24)))
+        $retryMediaCutoff = now()
+            ->subHours(max(1, (int) config('openwa.retry_media_window_hours', 240)))
             ->format('Ymd H:i:s.v');
 
         Message::query()
@@ -49,8 +49,8 @@ class RetryWhatsappMedia extends Command
             ->whereNull('media_path')
             ->whereNotNull('external_id')
             ->where('updated_at', '>=', now()->subMinutes($minutes)->format('Ymd H:i:s.v'))
-            ->whereRaw('COALESCE(sent_at, received_at, created_at) >= ?', [$recentCutoff])
-            ->oldest('updated_at')
+            ->whereRaw('COALESCE(sent_at, received_at, created_at) >= ?', [$retryMediaCutoff])
+            ->orderByRaw('COALESCE(sent_at, received_at, created_at) DESC')
             ->limit($limit)
             ->get()
             ->each(function (Message $message) use ($mediaDownloader, $sessionId): void {

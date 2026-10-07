@@ -2,7 +2,10 @@
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\OpenWaClient;
+use App\Services\WhatsappMessageMediaDownloader;
 use Illuminate\Auth\Middleware\Authenticate;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
@@ -257,7 +260,7 @@ it('downloads omitted media with the retry command', function () {
         'openwa.api_key' => 'testing-key',
         'openwa.base_url' => 'http://openwa.test/api',
         'openwa.session_name' => 'whatsapp-sistemas',
-        'openwa.recent_sync_window_hours' => 24,
+        'openwa.retry_media_window_hours' => 240,
     ]);
 
     $conversation = Conversation::query()->create([
@@ -272,6 +275,7 @@ it('downloads omitted media with the retry command', function () {
         'body' => null,
         'type' => 'audio',
         'status' => 'received',
+        'sent_at' => now()->subHours(2),
         'media_mime_type' => 'audio/ogg',
         'media_filename' => 'voice.ogg',
         'media_download_status' => 'omitted',
@@ -315,13 +319,14 @@ it('downloads omitted media with the retry command', function () {
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('retry-audio-bytes');
 });
 
-it('does not retry omitted media outside the recent sync window', function () {
+it('does not retry omitted media outside the retry media window', function () {
     Storage::fake('whatsapp_media');
     config([
         'openwa.api_key' => 'testing-key',
         'openwa.base_url' => 'http://openwa.test/api',
         'openwa.session_name' => 'whatsapp-sistemas',
         'openwa.recent_sync_window_hours' => 24,
+        'openwa.retry_media_window_hours' => 240,
     ]);
 
     $conversation = Conversation::query()->create([
@@ -336,7 +341,7 @@ it('does not retry omitted media outside the recent sync window', function () {
         'body' => null,
         'type' => 'audio',
         'status' => 'received',
-        'received_at' => now()->subHours(25),
+        'received_at' => now()->subHours(241),
         'media_mime_type' => 'audio/ogg',
         'media_filename' => 'old.ogg',
         'media_download_status' => 'omitted',
@@ -344,7 +349,7 @@ it('does not retry omitted media outside the recent sync window', function () {
 
     Message::withoutTimestamps(function () use ($message): void {
         $message->forceFill([
-            'created_at' => now()->subHours(25),
+            'created_at' => now()->subHours(241),
             'updated_at' => now(),
         ])->save();
     });
@@ -377,6 +382,122 @@ it('does not retry omitted media outside the recent sync window', function () {
 
     expect($message->media_download_status)->toBe('omitted')
         ->and($message->media_path)->toBeNull();
+});
+
+it('retries recent media before older media regardless of updated at order', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.api_key' => 'testing-key',
+        'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $olderMessage = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-order-old',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'audio',
+        'status' => 'received',
+        'sent_at' => now()->subHours(2),
+        'media_mime_type' => 'audio/ogg',
+        'media_filename' => 'old.ogg',
+        'media_download_status' => 'omitted',
+    ]);
+    $recentMessage = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-order-recent',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'audio',
+        'status' => 'received',
+        'sent_at' => now()->subHour(),
+        'media_mime_type' => 'audio/ogg',
+        'media_filename' => 'recent.ogg',
+        'media_download_status' => 'omitted',
+    ]);
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            $message->forceFill(['media_download_status' => 'stored'])->save();
+
+            return true;
+        }
+    });
+
+    expect(Artisan::call('whatsapp:retry-media', [
+        '--limit' => 1,
+        '--minutes' => 1440,
+    ]))->toBe(0);
+
+    $output = Artisan::output();
+
+    expect($output)->toContain('Intentados: 1')
+        ->and($output)->toContain('Guardados: 1');
+
+    expect($recentMessage->refresh()->media_download_status)->toBe('stored')
+        ->and($olderMessage->refresh()->media_download_status)->toBe('omitted')
+        ->and($olderMessage->media_path)->toBeNull();
+});
+
+it('keeps omitted webhook media retriable when direct and history downloads return null', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.webhook_secret' => null,
+    ]);
+
+    Http::fake(function ($request) {
+        $url = rawurldecode(rawurldecode($request->url()));
+
+        if (str_contains($url, '/sessions/session-1/messages/5491100000000@c.us/webhook-image-null-1/media')) {
+            return Http::response([], 404);
+        }
+
+        if (str_contains($url, '/sessions/session-1/messages/5491100000000@c.us/history')) {
+            return Http::response(['data' => []]);
+        }
+
+        return Http::response([], 404);
+    });
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'sessionId' => 'session-1',
+        'id' => 'webhook-image-null-1',
+        'chatId' => '5491100000000@c.us',
+        'from' => '5491100000000@c.us',
+        'type' => 'image',
+        'media' => [
+            'mimetype' => 'image/png',
+            'filename' => 'foto.png',
+            'omitted' => true,
+        ],
+    ])->assertOk();
+
+    $message = Message::query()->firstOrFail();
+
+    expect($message->media_path)->toBeNull()
+        ->and($message->media_download_status)->toBe('omitted')
+        ->and($message->media_error)->toBe('Archivo no disponible.');
 });
 
 it('stores webhook voice notes with ogg codec mime so they can be played', function () {
