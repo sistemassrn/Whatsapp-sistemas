@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\WhatsappAccount;
 use App\Services\WhatsappConnectionStatus;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\RedirectResponse;
@@ -117,6 +118,7 @@ class WhatsappConversationsController extends Controller
                 'error' => session('error'),
             ],
             'connection' => fn (): array => $connection ?? $connectionStatus->connection(autoStart: true, includeQr: false),
+            'maintenance' => fn (): array => $this->maintenanceInfo(),
             'conversations' => $conversations->map(function (Conversation $conversation) use ($latestMessages): array {
                 $latestMessage = $latestMessages->get($conversation->getAttribute('latest_message_id')) ?? $conversation->lastMessage;
                 $latestMessageAt = $latestMessage?->sent_at ?? $latestMessage?->received_at ?? $latestMessage?->created_at ?? $conversation->last_message_at;
@@ -234,6 +236,27 @@ class WhatsappConversationsController extends Controller
         }
 
         return in_array('connection', array_map('trim', explode(',', $partialData)), true);
+    }
+
+    /**
+     * @return array{status: string|null, started_at: string|null, finished_at: string|null, error: string|null, recent_sync_window_hours: int, retry_media_window_hours: int, retry_media_cooldown_hours: int, scheduler: string}
+     */
+    private function maintenanceInfo(): array
+    {
+        $account = WhatsappAccount::query()
+            ->where('name', (string) config('openwa.session_name'))
+            ->first();
+
+        return [
+            'status' => $account?->maintenance_status,
+            'started_at' => $account?->maintenance_started_at?->toISOString(),
+            'finished_at' => $account?->maintenance_finished_at?->toISOString(),
+            'error' => $account?->maintenance_error,
+            'recent_sync_window_hours' => (int) config('openwa.recent_sync_window_hours'),
+            'retry_media_window_hours' => (int) config('openwa.retry_media_window_hours'),
+            'retry_media_cooldown_hours' => (int) config('openwa.retry_media_cooldown_hours'),
+            'scheduler' => 'Todos los días a las 7:00',
+        ];
     }
 
     private function firstUnreadMessageId(Conversation $conversation): ?int

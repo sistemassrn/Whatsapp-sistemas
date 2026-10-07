@@ -7,6 +7,7 @@ use App\Http\Controllers\NexoAuthController;
 use App\Http\Controllers\WhatsappConnectionController;
 use App\Http\Controllers\WhatsappContactAvatarController;
 use App\Http\Controllers\WhatsappConversationsController;
+use App\Http\Controllers\WhatsappSyncMaintenanceController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [NexoAuthController::class, 'create'])->name('home');
@@ -25,6 +26,10 @@ Route::post('/whatsapp/connect/start', [WhatsappConnectionController::class, 'st
 Route::post('/whatsapp/disconnect', [WhatsappConnectionController::class, 'disconnect'])
     ->middleware('auth')
     ->name('whatsapp.disconnect');
+
+Route::post('/whatsapp/sync-maintenance', WhatsappSyncMaintenanceController::class)
+    ->middleware('auth')
+    ->name('whatsapp.sync-maintenance');
 
 Route::get('/whatsapp/conversations', WhatsappConversationsController::class)
     ->middleware('auth')

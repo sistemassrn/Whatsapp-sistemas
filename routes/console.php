@@ -9,5 +9,10 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('whatsapp:sync-maintenance')
-    ->cron('0 */8 * * *')
+    ->dailyAt('07:00')
+    ->timezone('America/Argentina/Buenos_Aires')
+    ->withoutOverlapping();
+
+Schedule::command('whatsapp:monitor-openwa')
+    ->everyTwoMinutes()
     ->withoutOverlapping();

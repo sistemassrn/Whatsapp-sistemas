@@ -348,14 +348,8 @@
         display: grid;
         min-height: 10rem;
         place-items: center;
-        background: repeating-linear-gradient(
-            135deg,
-            color-mix(in srgb, var(--app-surface-soft) 92%, transparent),
-            color-mix(in srgb, var(--app-surface-soft) 92%, transparent) 0.75rem,
-            color-mix(in srgb, var(--app-surface-strong) 72%, transparent) 0.75rem,
-            color-mix(in srgb, var(--app-surface-strong) 72%, transparent) 1.5rem
-        );
-        color: var(--app-muted);
+        background: color-mix(in srgb, var(--app-surface-strong) 72%, var(--app-surface));
+        color: var(--app-faint);
         text-align: center;
     }
 

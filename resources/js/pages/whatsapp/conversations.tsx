@@ -1,5 +1,5 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MailOpen, MoreVertical, Paperclip, Pause, Pencil, Play, Search, Send, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MailOpen, MoreVertical, Paperclip, Pause, Pencil, Play, Search, Send, Settings, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ThemeToggle } from '../../theme';
@@ -107,6 +107,17 @@ type ConnectionState = {
     error?: string | null;
 };
 
+type MaintenanceInfo = {
+    status: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    error: string | null;
+    recent_sync_window_hours: number;
+    retry_media_window_hours: number;
+    retry_media_cooldown_hours: number;
+    scheduler: string;
+};
+
 type Props = {
     operator?: Operator;
     auth?: {
@@ -120,6 +131,7 @@ type Props = {
     messages: MessageItem[];
     emptyState?: string | null;
     connection: ConnectionState;
+    maintenance: MaintenanceInfo;
     flash?: {
         success?: string | null;
         error?: string | null;
@@ -130,7 +142,7 @@ type Props = {
     };
 };
 
-const INBOX_RELOAD_PROPS = ['conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId'];
+const INBOX_RELOAD_PROPS = ['conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId', 'maintenance'];
 const requestedAvatarContactIds = new Set<number>();
 
 function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null>, active: boolean, onClose: () => void) {
@@ -155,7 +167,7 @@ function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null
     }, [active, onClose, ref]);
 }
 
-export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, firstUnreadMessageId, messages, emptyState, filters, flash }: Props) {
+export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, firstUnreadMessageId, messages, emptyState, filters, flash, maintenance }: Props) {
     const { auth } = usePage<Props>().props;
     const selectedConversation = conversations.find((conversation) => conversation.external_id === selectedChatId) ?? null;
     const operatorName = operator?.name ?? auth?.user?.nombre ?? auth?.user?.usuario ?? 'Operador';
@@ -169,6 +181,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const incomingMessageSoundStartedAtRef = useRef(Date.now() - 30000);
     const disconnectForm = useForm({});
     const logoutForm = useForm({});
+    const syncMaintenanceForm = useForm({});
+    const [maintenanceModalOpen, setMaintenanceModalOpen] = useState(false);
+    const maintenanceIsRunning = maintenance.status === 'running';
 
     useEffect(() => {
         incomingMessageSoundRef.current = new Audio(INCOMING_MESSAGE_SOUND_URL);
@@ -304,7 +319,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
     }, [flash?.error, flash?.success]);
 
     useEffect(() => {
-        if (!selectedChatId) {
+        if (!selectedChatId || maintenanceModalOpen) {
             return;
         }
 
@@ -332,7 +347,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
         document.addEventListener('keydown', deselectConversation);
 
         return () => document.removeEventListener('keydown', deselectConversation);
-    }, [filters.chat_search, selectedChatId]);
+    }, [filters.chat_search, maintenanceModalOpen, selectedChatId]);
 
     useEffect(() => {
         const interval = window.setInterval(() => {
@@ -359,6 +374,14 @@ export default function Conversations({ operator, conversations, selectedChatId,
         logoutForm.post('/logout');
     }
 
+    function syncMaintenance(event: FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        syncMaintenanceForm.post('/whatsapp/sync-maintenance', {
+            only: INBOX_RELOAD_PROPS,
+            preserveScroll: true,
+        });
+    }
+
     return (
         <>
             <Head title="Chats" />
@@ -378,24 +401,14 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
                                 <div className="flex shrink-0 flex-wrap justify-end gap-2">
                                     <ThemeToggle />
-                                    <form onSubmit={disconnect}>
-                                        <button
-                                            type="submit"
-                                            disabled={disconnectForm.processing}
-                                            className="app-button-danger rounded-lg border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            Cerrar sesión
-                                        </button>
-                                    </form>
-                                    <form onSubmit={logout}>
-                                        <button
-                                            type="submit"
-                                            disabled={logoutForm.processing}
-                                            className="app-button rounded-lg border px-3 py-2 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            Salir
-                                        </button>
-                                    </form>
+                                    <button
+                                        type="button"
+                                        onClick={() => setMaintenanceModalOpen(true)}
+                                        className="app-button grid size-9 place-items-center rounded-lg border transition"
+                                        aria-label="Abrir mantenimiento"
+                                    >
+                                        <Settings className="size-4" />
+                                    </button>
                                 </div>
                             </div>
 
@@ -453,9 +466,124 @@ export default function Conversations({ operator, conversations, selectedChatId,
                             <EmptyConversation />
                         )}
                     </section>
+
+                    {maintenanceModalOpen ? (
+                        <MaintenanceModal
+                            maintenance={maintenance}
+                            isRunning={maintenanceIsRunning}
+                            syncing={syncMaintenanceForm.processing}
+                            disconnecting={disconnectForm.processing}
+                            loggingOut={logoutForm.processing}
+                            onClose={() => setMaintenanceModalOpen(false)}
+                            onSync={syncMaintenance}
+                            onDisconnect={disconnect}
+                            onLogout={logout}
+                        />
+                    ) : null}
                 </section>
             </main>
         </>
+    );
+}
+
+function MaintenanceModal({
+    maintenance,
+    isRunning,
+    syncing,
+    disconnecting,
+    loggingOut,
+    onClose,
+    onSync,
+    onDisconnect,
+    onLogout,
+}: {
+    maintenance: MaintenanceInfo;
+    isRunning: boolean;
+    syncing: boolean;
+    disconnecting: boolean;
+    loggingOut: boolean;
+    onClose: () => void;
+    onSync: (event: FormEvent<HTMLFormElement>) => void;
+    onDisconnect: (event: FormEvent<HTMLFormElement>) => void;
+    onLogout: (event: FormEvent<HTMLFormElement>) => void;
+}) {
+    const modalRef = useRef<HTMLDivElement>(null);
+
+    useCloseOnOutsidePointer(modalRef, true, onClose);
+
+    useEffect(() => {
+        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== 'Escape') {
+                return;
+            }
+
+            event.preventDefault();
+            onClose();
+        };
+
+        document.addEventListener('keydown', closeOnEscape);
+
+        return () => document.removeEventListener('keydown', closeOnEscape);
+    }, [onClose]);
+
+    return (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4" role="presentation">
+            <section ref={modalRef} className="app-surface w-full max-w-lg rounded-3xl border p-5 shadow-2xl shadow-black/30" role="dialog" aria-modal="true" aria-labelledby="maintenance-title">
+                <header className="flex items-start justify-between gap-4">
+                    <div>
+                        <h2 id="maintenance-title" className="text-lg font-semibold">Mantenimiento</h2>
+                        <p className="app-muted mt-1 text-sm">Sincronización con WhatsApp.</p>
+                    </div>
+                    <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label="Cerrar mantenimiento">
+                        <X className="size-4" />
+                    </button>
+                </header>
+
+                <dl className="mt-5 grid gap-3 rounded-2xl border border-(--app-border) bg-(--app-surface-soft) p-4 text-sm sm:grid-cols-2">
+                    <MaintenanceStatus label="Estado" value={maintenanceStatusLabel(maintenance.status)} highlight={isRunning} />
+                    <MaintenanceStatus label="Último inicio" value={formatDateTime(maintenance.started_at)} />
+                    <MaintenanceStatus label="Último fin" value={formatDateTime(maintenance.finished_at)} />
+                    <MaintenanceStatus label="Programación" value={maintenance.scheduler} />
+                    <MaintenanceStatus label="Ventana mensajes" value={`${maintenance.recent_sync_window_hours} h`} />
+                    <MaintenanceStatus label="Ventana medios" value={`${maintenance.retry_media_window_hours} h`} />
+                    {/* <MaintenanceStatus label="Tiempo de medios" value={`${maintenance.retry_media_cooldown_hours} h`} /> */}
+                </dl>
+
+                {maintenance.error ? (
+                    <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-200">
+                        <p className="font-semibold">Último error</p>
+                        <p className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap leading-5">{maintenance.error}</p>
+                    </div>
+                ) : null}
+
+                <div className="mt-5 grid gap-2 sm:grid-cols-3">
+                    <form onSubmit={onSync}>
+                        <button type="submit" disabled={syncing || isRunning} className="app-button-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                            {isRunning ? 'Sincronizando...' : 'Ejecutar sync'}
+                        </button>
+                    </form>
+                    <form onSubmit={onDisconnect}>
+                        <button type="submit" disabled={disconnecting} className="app-button-danger w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                            Cambiar sesión
+                        </button>
+                    </form>
+                    <form onSubmit={onLogout}>
+                        <button type="submit" disabled={loggingOut} className="app-button w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                            Cerrar sesión
+                        </button>
+                    </form>
+                </div>
+            </section>
+        </div>
+    );
+}
+
+function MaintenanceStatus({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
+    return (
+        <div>
+            <dt className="app-faint text-xs font-semibold uppercase tracking-wide">{label}</dt>
+            <dd className={`mt-1 font-medium ${highlight ? 'text-green-600 dark:text-green-300' : ''}`}>{value}</dd>
+        </div>
     );
 }
 
@@ -1717,7 +1845,6 @@ function ImageUnavailableFallback({ compact = false }: { compact?: boolean }) {
     return (
         <div className={`app-image-fallback ${compact ? 'app-image-fallback-compact' : 'mb-2 rounded-lg border px-4 py-6'}`} role="img" aria-label="Imagen no disponible">
             <p className="font-semibold">Imagen no disponible</p>
-            <p className="mt-1 text-xs">No pudimos cargar el archivo.</p>
         </div>
     );
 }
@@ -2028,6 +2155,42 @@ function SearchForm({
             {actions}
         </form>
     );
+}
+
+function maintenanceStatusLabel(status: string | null): string {
+    if (status === 'running') {
+        return 'En curso';
+    }
+
+    if (status === 'success') {
+        return 'Correcta';
+    }
+
+    if (status === 'failed') {
+        return 'Fallida';
+    }
+
+    return 'Sin ejecuciones';
+}
+
+function formatDateTime(value: string | null): string {
+    if (!value) {
+        return 'Sin datos';
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+        return value;
+    }
+
+    return date.toLocaleString('es-AR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
 }
 
 function compactQuery(query: Record<string, string | number | null | undefined>): Record<string, string | number> {

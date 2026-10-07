@@ -23,6 +23,8 @@ return [
 
     'retry_media_cooldown_hours' => (int) env('OPENWA_RETRY_MEDIA_COOLDOWN_HOURS', 6),
 
+    'recovery_sync_cooldown_minutes' => (int) env('OPENWA_RECOVERY_SYNC_COOLDOWN_MINUTES', 15),
+
     'import_unknown_historical_chats' => (bool) env('OPENWA_IMPORT_UNKNOWN_HISTORICAL_CHATS', false),
 
     'sync_recent' => [

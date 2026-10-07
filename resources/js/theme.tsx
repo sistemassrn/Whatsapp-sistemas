@@ -82,7 +82,7 @@ export function ThemeToggle({ className = '' }: { className?: string }) {
             aria-pressed={isLight}
         >
             {isLight ? <Moon className="size-4" /> : <Sun className="size-4" />}
-            <span>{isLight ? 'Oscuro' : 'Claro'}</span>
+            {/* <span>{isLight ? 'Oscuro' : 'Claro'}</span> */}
         </button>
     );
 }
