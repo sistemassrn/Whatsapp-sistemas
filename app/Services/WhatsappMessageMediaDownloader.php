@@ -154,6 +154,8 @@ class WhatsappMessageMediaDownloader
             'media_size_bytes' => $size,
             'media_download_status' => 'stored',
             'media_error' => null,
+            'media_next_retry_at' => null,
+            'media_retry_attempts' => 0,
             'media_metadata' => array_merge($metadata, [
                 'fallback_downloaded' => true,
                 'fallback_source' => $context['source'] ?? 'openwa',
@@ -202,6 +204,12 @@ class WhatsappMessageMediaDownloader
 
     private function markFailed(Message $message, string $error, ?string $mimeType = null, ?string $filename = null, ?int $size = null): void
     {
+        if ($error === 'Archivo no disponible.') {
+            $this->markRetriable($message, $error);
+
+            return;
+        }
+
         $message->forceFill(array_filter([
             'media_mime_type' => $mimeType,
             'media_filename' => $filename,
@@ -219,11 +227,27 @@ class WhatsappMessageMediaDownloader
         $mediaError = $message->media_download_status === 'failed' && is_string($message->media_error) && $message->media_error !== ''
             ? $message->media_error
             : $error;
+        $attempts = max(0, (int) $message->media_retry_attempts) + 1;
 
         $message->forceFill([
             'media_download_status' => $status,
             'media_error' => $mediaError,
+            'media_next_retry_at' => now()->addMinutes($this->retryDelayMinutes($attempts)),
+            'media_retry_attempts' => $attempts,
         ])->save();
+    }
+
+    private function retryDelayMinutes(int $attempts): int
+    {
+        $cooldownMinutes = max(1, (int) config('openwa.retry_media_cooldown_hours', 6)) * 60;
+        $delayMinutes = match ($attempts) {
+            1 => 5,
+            2 => 15,
+            3 => 60,
+            default => $cooldownMinutes,
+        };
+
+        return min($delayMinutes, $cooldownMinutes);
     }
 
     private function decodeBase64Media(string $encodedData): ?string

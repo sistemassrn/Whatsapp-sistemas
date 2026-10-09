@@ -15,7 +15,7 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
 
     public const LOCK_SECONDS = 7200;
 
-    public function __construct(public ?string $reason = null) {}
+    public function __construct(public string $reason = 'manual') {}
 
     /**
      * Execute the job.
@@ -29,10 +29,19 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
         }
 
         try {
-            $this->account()->forceFill([
+            $startedAt = now();
+            $account = $this->account();
+            $requestedAt = $account->maintenance_status === 'queued' && $account->maintenance_reason === $this->reason
+                ? ($account->maintenance_requested_at ?? $startedAt)
+                : $startedAt;
+
+            $account->forceFill([
                 'maintenance_status' => 'running',
-                'maintenance_started_at' => now(),
+                'maintenance_reason' => $this->reason,
+                'maintenance_requested_at' => $requestedAt,
+                'maintenance_started_at' => $startedAt,
                 'maintenance_finished_at' => null,
+                'maintenance_duration_seconds' => null,
                 'maintenance_error' => null,
             ])->save();
 
@@ -45,9 +54,12 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
                 return;
             }
 
-            $this->account()->forceFill([
+            $finishedAt = now();
+
+            $account->forceFill([
                 'maintenance_status' => 'success',
-                'maintenance_finished_at' => now(),
+                'maintenance_finished_at' => $finishedAt,
+                'maintenance_duration_seconds' => max(0, $startedAt->diffInSeconds($finishedAt)),
                 'maintenance_error' => null,
             ])->save();
         } catch (Throwable $exception) {
@@ -80,9 +92,14 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
 
     private function markFailed(string $message): void
     {
-        $this->account()->forceFill([
+        $finishedAt = now();
+        $account = $this->account();
+        $startedAt = $account->maintenance_started_at;
+
+        $account->forceFill([
             'maintenance_status' => 'failed',
-            'maintenance_finished_at' => now(),
+            'maintenance_finished_at' => $finishedAt,
+            'maintenance_duration_seconds' => $startedAt === null ? null : max(0, $startedAt->diffInSeconds($finishedAt)),
             'maintenance_error' => mb_substr($message, 0, 65000),
         ])->save();
     }

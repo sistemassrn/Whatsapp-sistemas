@@ -13,7 +13,10 @@ use Illuminate\Support\Carbon;
  * @property string|null $last_error
  * @property Carbon|null $maintenance_started_at
  * @property Carbon|null $maintenance_finished_at
+ * @property Carbon|null $maintenance_requested_at
+ * @property int|null $maintenance_duration_seconds
  * @property string|null $maintenance_status
+ * @property string|null $maintenance_reason
  * @property string|null $maintenance_error
  * @property string|null $openwa_last_status
  * @property Carbon|null $openwa_last_checked_at
@@ -36,7 +39,10 @@ class WhatsappAccount extends WhatsappModel
         'last_error',
         'maintenance_started_at',
         'maintenance_finished_at',
+        'maintenance_requested_at',
+        'maintenance_duration_seconds',
         'maintenance_status',
+        'maintenance_reason',
         'maintenance_error',
         'openwa_last_status',
         'openwa_last_checked_at',
@@ -56,6 +62,7 @@ class WhatsappAccount extends WhatsappModel
             'last_seen_at' => 'datetime',
             'maintenance_started_at' => 'datetime',
             'maintenance_finished_at' => 'datetime',
+            'maintenance_requested_at' => 'datetime',
             'openwa_last_checked_at' => 'datetime',
             'openwa_last_ready_at' => 'datetime',
             'openwa_last_recovery_sync_at' => 'datetime',

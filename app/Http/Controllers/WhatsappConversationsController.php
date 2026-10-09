@@ -239,7 +239,7 @@ class WhatsappConversationsController extends Controller
     }
 
     /**
-     * @return array{status: string|null, started_at: string|null, finished_at: string|null, error: string|null, recent_sync_window_hours: int, retry_media_window_hours: int, retry_media_cooldown_hours: int, scheduler: string}
+     * @return array{status: string|null, reason: string|null, requested_at: string|null, started_at: string|null, finished_at: string|null, duration_seconds: int|null, error: string|null, recent_sync_window_hours: int, retry_media_window_hours: int, retry_media_cooldown_hours: int, retry_media_every_minutes: int, scheduler: string}
      */
     private function maintenanceInfo(): array
     {
@@ -249,13 +249,17 @@ class WhatsappConversationsController extends Controller
 
         return [
             'status' => $account?->maintenance_status,
+            'reason' => $account?->maintenance_reason,
+            'requested_at' => $account?->maintenance_requested_at?->toISOString(),
             'started_at' => $account?->maintenance_started_at?->toISOString(),
             'finished_at' => $account?->maintenance_finished_at?->toISOString(),
+            'duration_seconds' => $account?->maintenance_duration_seconds,
             'error' => $account?->maintenance_error,
             'recent_sync_window_hours' => (int) config('openwa.recent_sync_window_hours'),
             'retry_media_window_hours' => (int) config('openwa.retry_media_window_hours'),
             'retry_media_cooldown_hours' => (int) config('openwa.retry_media_cooldown_hours'),
-            'scheduler' => 'todos los días a las 7:00 a. m.',
+            'retry_media_every_minutes' => 5,
+            'scheduler' => 'Programado todos los días a las 7:00 a. m. (Argentina)',
         ];
     }
 

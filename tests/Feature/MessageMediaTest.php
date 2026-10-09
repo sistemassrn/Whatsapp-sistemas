@@ -5,6 +5,7 @@ use App\Models\Message;
 use App\Services\OpenWaClient;
 use App\Services\WhatsappMessageMediaDownloader;
 use Illuminate\Auth\Middleware\Authenticate;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
@@ -131,6 +132,7 @@ it('downloads and stores omitted webhook image media from OpenWA', function () {
     config([
         'openwa.api_key' => 'testing-key',
         'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
         'openwa.webhook_secret' => null,
     ]);
 
@@ -141,6 +143,16 @@ it('downloads and stores omitted webhook image media from OpenWA', function () {
             return Http::response('downloaded-image', 200, [
                 'Content-Type' => 'image/png',
                 'Content-Disposition' => 'attachment; filename="foto.png"',
+            ]);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
             ]);
         }
 
@@ -161,6 +173,13 @@ it('downloads and stores omitted webhook image media from OpenWA', function () {
     ])->assertOk();
 
     $message = Message::query()->firstOrFail();
+
+    expect($message->media_download_status)->toBe('omitted');
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->assertSuccessful();
+
+    $message->refresh();
 
     expect($message->media_download_status)->toBe('stored')
         ->and($message->media_mime_type)->toBe('image/png')
@@ -217,6 +236,13 @@ it('downloads omitted webhook media through the configured ready session when we
 
     $message = Message::query()->firstOrFail();
 
+    expect($message->media_download_status)->toBe('omitted');
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->assertSuccessful();
+
+    $message->refresh();
+
     expect($message->media_download_status)->toBe('stored')
         ->and($message->media_size_bytes)->toBe(strlen('downloaded-with-configured-session'));
 
@@ -227,12 +253,29 @@ it('keeps omitted webhook media retriable when OpenWA cannot download it yet', f
     Storage::fake('whatsapp_media');
     config([
         'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
         'openwa.webhook_secret' => null,
     ]);
 
-    Http::fake([
-        'openwa.test/api/sessions/session-1/messages/*' => Http::response(['message' => 'not ready'], 409),
-    ]);
+    Http::fake(function ($request) {
+        $url = rawurldecode(rawurldecode($request->url()));
+
+        if (str_contains($url, '/sessions/session-1/messages/')) {
+            return Http::response(['message' => 'not ready'], 409);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
+            ]);
+        }
+
+        return Http::response([], 404);
+    });
 
     $this->postJson(route('internal.openwa.messages.store'), [
         'sessionId' => 'session-1',
@@ -250,6 +293,13 @@ it('keeps omitted webhook media retriable when OpenWA cannot download it yet', f
     $message = Message::query()->firstOrFail();
 
     expect($message->media_path)->toBeNull()
+        ->and($message->media_download_status)->toBe('omitted')
+        ->and($message->media_error)->toBeNull();
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->assertSuccessful();
+
+    expect($message->refresh()->media_path)->toBeNull()
         ->and($message->media_download_status)->toBe('omitted')
         ->and($message->media_error)->toBe('Archivo no disponible.');
 });
@@ -444,12 +494,11 @@ it('skips stored media with the retry command when the local file exists', funct
         ->and($message->media_path)->toBe('inbound/test/existing.jpg');
 });
 
-it('applies the retry media cooldown only to recent media errors', function () {
+it('skips retriable media scheduled for a future retry', function () {
     Storage::fake('whatsapp_media');
     config([
         'openwa.session_name' => 'whatsapp-sistemas',
         'openwa.retry_media_window_hours' => 240,
-        'openwa.retry_media_cooldown_hours' => 6,
     ]);
 
     $conversation = Conversation::query()->create([
@@ -457,9 +506,9 @@ it('applies the retry media cooldown only to recent media errors', function () {
         'title' => 'Cliente Demo',
     ]);
 
-    $recentMessage = Message::query()->create([
+    $message = Message::query()->create([
         'conversation_id' => $conversation->id,
-        'external_id' => 'wamid-retry-recent-error',
+        'external_id' => 'wamid-retry-future-error',
         'direction' => 'inbound',
         'body' => null,
         'type' => 'image',
@@ -467,22 +516,63 @@ it('applies the retry media cooldown only to recent media errors', function () {
         'sent_at' => now()->subHour(),
         'media_download_status' => 'failed',
         'media_error' => 'Archivo no disponible.',
+        'media_next_retry_at' => now()->addMinutes(10),
     ]);
-    $olderMessage = Message::query()->create([
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            throw new RuntimeException('Future scheduled media should not be retried.');
+        }
+    });
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->expectsOutput('Intentados: 0')
+        ->assertSuccessful();
+
+    expect($message->refresh()->media_download_status)->toBe('failed')
+        ->and($message->media_next_retry_at)->not->toBeNull();
+});
+
+it('retries media with missing retry schedule even when updated recently', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $nullScheduleMessage = Message::query()->create([
         'conversation_id' => $conversation->id,
-        'external_id' => 'wamid-retry-old-error',
+        'external_id' => 'wamid-retry-null-schedule',
         'direction' => 'inbound',
         'body' => null,
         'type' => 'image',
         'status' => 'received',
-        'sent_at' => now()->subHours(2),
+        'sent_at' => now()->subHour(),
         'media_download_status' => 'failed',
         'media_error' => 'Archivo no disponible.',
+        'media_next_retry_at' => null,
     ]);
 
-    Message::withoutTimestamps(function () use ($recentMessage, $olderMessage): void {
-        $recentMessage->forceFill(['updated_at' => now()->subHour()])->save();
-        $olderMessage->forceFill(['updated_at' => now()->subHours(7)])->save();
+    Message::withoutTimestamps(function () use ($nullScheduleMessage): void {
+        $nullScheduleMessage->forceFill(['updated_at' => now()])->save();
     });
 
     app()->instance(OpenWaClient::class, new class extends OpenWaClient
@@ -510,14 +600,142 @@ it('applies the retry media cooldown only to recent media errors', function () {
     });
 
     expect(Artisan::call('whatsapp:retry-media', [
-        '--limit' => 10,
+        '--limit' => 1,
         '--minutes' => 1440,
     ]))->toBe(0);
 
     expect(Artisan::output())->toContain('Intentados: 1');
 
-    expect($recentMessage->refresh()->media_download_status)->toBe('failed')
-        ->and($olderMessage->refresh()->media_download_status)->toBe('stored');
+    expect($nullScheduleMessage->refresh()->media_download_status)->toBe('stored');
+});
+
+it('retries media with due retry schedule even when updated recently', function () {
+    Storage::fake('whatsapp_media');
+    config([
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-past-schedule',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHours(2),
+        'media_download_status' => 'failed',
+        'media_error' => 'Archivo no disponible.',
+        'media_next_retry_at' => now()->subDay(),
+    ]);
+
+    Message::withoutTimestamps(function () use ($message): void {
+        $message->forceFill(['updated_at' => now()])->save();
+    });
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            $message->forceFill([
+                'media_download_status' => 'stored',
+                'media_error' => null,
+            ])->save();
+
+            return true;
+        }
+    });
+
+    expect(Artisan::call('whatsapp:retry-media', [
+        '--limit' => 1,
+        '--minutes' => 1440,
+    ]))->toBe(0);
+
+    expect(Artisan::output())->toContain('Intentados: 1');
+
+    expect($message->refresh()->media_download_status)->toBe('stored');
+});
+
+it('sets retriable media backoff after failure and clears it after success', function () {
+    Storage::fake('whatsapp_media');
+    Carbon::setTestNow(Carbon::parse('2026-10-09 12:00:00'));
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-backoff',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subMinute(),
+        'media_download_status' => 'omitted',
+    ]);
+
+    $failedDownloader = new WhatsappMessageMediaDownloader(new class extends OpenWaClient
+    {
+        public function downloadMessageMedia(string $sessionId, string $chatId, string $messageId): ?array
+        {
+            return null;
+        }
+
+        public function downloadMessageMediaFromHistory(string $sessionId, string $chatId, string $messageId, int $limit = 20): ?array
+        {
+            return null;
+        }
+    });
+
+    expect($failedDownloader->attempt($message, 'session-1', '5491100000000@c.us'))->toBeFalse();
+
+    $message->refresh();
+
+    expect($message->media_download_status)->toBe('omitted')
+        ->and($message->media_error)->toBe('Archivo no disponible.')
+        ->and($message->media_retry_attempts)->toBe(1)
+        ->and($message->media_next_retry_at?->equalTo(now()->addMinutes(5)))->toBeTrue();
+
+    $successfulDownloader = new WhatsappMessageMediaDownloader(new class extends OpenWaClient
+    {
+        public function downloadMessageMedia(string $sessionId, string $chatId, string $messageId): ?array
+        {
+            return [
+                'binary' => 'image-bytes',
+                'mimetype' => 'image/jpeg',
+                'filename' => 'image.jpg',
+            ];
+        }
+    });
+
+    expect($successfulDownloader->attempt($message->refresh(), 'session-1', '5491100000000@c.us'))->toBeTrue();
+
+    $message->refresh();
+
+    expect($message->media_download_status)->toBe('stored')
+        ->and($message->media_error)->toBeNull()
+        ->and($message->media_next_retry_at)->toBeNull()
+        ->and($message->media_retry_attempts)->toBe(0);
+
+    Carbon::setTestNow();
 });
 
 it('excludes permanent media type errors from the retry command', function () {
@@ -720,6 +938,7 @@ it('keeps omitted webhook media retriable when direct and history downloads retu
     Storage::fake('whatsapp_media');
     config([
         'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
         'openwa.webhook_secret' => null,
     ]);
 
@@ -732,6 +951,16 @@ it('keeps omitted webhook media retriable when direct and history downloads retu
 
         if (str_contains($url, '/sessions/session-1/messages/5491100000000@c.us/history')) {
             return Http::response(['data' => []]);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
+            ]);
         }
 
         return Http::response([], 404);
@@ -753,6 +982,13 @@ it('keeps omitted webhook media retriable when direct and history downloads retu
     $message = Message::query()->firstOrFail();
 
     expect($message->media_path)->toBeNull()
+        ->and($message->media_download_status)->toBe('omitted')
+        ->and($message->media_error)->toBeNull();
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->assertSuccessful();
+
+    expect($message->refresh()->media_path)->toBeNull()
         ->and($message->media_download_status)->toBe('omitted')
         ->and($message->media_error)->toBe('Archivo no disponible.');
 });
@@ -793,16 +1029,33 @@ it('downloads omitted webhook voice notes with ogg codec mime so they can be pla
     Storage::fake('whatsapp_media');
     config([
         'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.session_name' => 'whatsapp-sistemas',
         'openwa.webhook_secret' => null,
     ]);
 
-    Http::fake([
-        'openwa.test/api/sessions/session-1/messages/*' => Http::response([
-            'data' => base64_encode('ogg-bytes'),
-            'mimetype' => 'audio/ogg; codecs=opus',
-            'filename' => 'voice.ogg',
-        ]),
-    ]);
+    Http::fake(function ($request) {
+        $url = rawurldecode(rawurldecode($request->url()));
+
+        if (str_contains($url, '/sessions/session-1/messages/')) {
+            return Http::response([
+                'data' => base64_encode('ogg-bytes'),
+                'mimetype' => 'audio/ogg; codecs=opus',
+                'filename' => 'voice.ogg',
+            ]);
+        }
+
+        if (str_contains($url, '/sessions')) {
+            return Http::response([
+                'data' => [
+                    'id' => 'session-1',
+                    'name' => 'whatsapp-sistemas',
+                    'status' => 'ready',
+                ],
+            ]);
+        }
+
+        return Http::response([], 404);
+    });
 
     $this->postJson(route('internal.openwa.messages.store'), [
         'sessionId' => 'session-1',
@@ -818,6 +1071,14 @@ it('downloads omitted webhook voice notes with ogg codec mime so they can be pla
     ])->assertOk();
 
     $message = Message::query()->firstOrFail();
+
+    expect($message->type)->toBe('audio')
+        ->and($message->media_download_status)->toBe('omitted');
+
+    $this->artisan('whatsapp:retry-media --limit=10 --minutes=1440')
+        ->assertSuccessful();
+
+    $message->refresh();
 
     expect($message->type)->toBe('audio')
         ->and($message->media_download_status)->toBe('stored')

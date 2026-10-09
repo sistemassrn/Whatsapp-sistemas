@@ -2,6 +2,7 @@
 
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Services\WhatsappMessageMediaDownloader;
 
 it('rejects OpenWA webhooks when a configured shared secret is missing from the request', function () {
     config([
@@ -101,6 +102,30 @@ it('stores new unknown OpenWA webhook messages', function () {
 
     expect(Conversation::query()->where('external_id', '5491199990001@c.us')->exists())->toBeTrue()
         ->and(Message::query()->where('external_id', 'new-unknown-webhook-1')->exists())->toBeTrue();
+});
+
+it('stores omitted media webhook messages without attempting synchronous media download', function () {
+    config([
+        'openwa.import_unknown_historical_chats' => false,
+        'openwa.require_webhook_secret' => false,
+    ]);
+
+    $this->mock(WhatsappMessageMediaDownloader::class)
+        ->shouldNotReceive('attempt');
+
+    $this->postJson(route('internal.openwa.messages.store'), webhookPayload('omitted-media-webhook-1', [
+        'type' => 'image',
+        'mimetype' => 'image/jpeg',
+        'filename' => 'foto.jpg',
+        'mediaDataMissing' => true,
+    ]))
+        ->assertOk()
+        ->assertJson(['status' => 'stored']);
+
+    $message = Message::query()->where('external_id', 'omitted-media-webhook-1')->firstOrFail();
+
+    expect($message->media_download_status)->toBe('omitted')
+        ->and($message->media_path)->toBeNull();
 });
 
 it('stores OpenWA webhook messages without timestamps', function () {

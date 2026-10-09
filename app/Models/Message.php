@@ -24,6 +24,8 @@ use Illuminate\Support\Carbon;
  * @property int|null $media_size_bytes
  * @property string|null $media_download_status
  * @property string|null $media_error
+ * @property Carbon|null $media_next_retry_at
+ * @property int $media_retry_attempts
  * @property array<string, mixed>|null $media_metadata
  * @property Carbon|null $edited_at
  * @property Carbon|null $deleted_at
@@ -58,6 +60,8 @@ class Message extends WhatsappModel
         'media_size_bytes',
         'media_download_status',
         'media_error',
+        'media_next_retry_at',
+        'media_retry_attempts',
         'media_metadata',
         'edited_at',
         'deleted_at',
@@ -79,6 +83,7 @@ class Message extends WhatsappModel
             'received_at' => 'datetime',
             'edited_at' => 'datetime',
             'deleted_at' => 'datetime',
+            'media_next_retry_at' => 'datetime',
             'media_metadata' => 'array',
         ];
     }

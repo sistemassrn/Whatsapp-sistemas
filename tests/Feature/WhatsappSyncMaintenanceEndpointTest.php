@@ -3,6 +3,7 @@
 use App\Jobs\RunWhatsappSyncMaintenance;
 use App\Models\WhatsappAccount;
 use Illuminate\Auth\Middleware\Authenticate;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -15,12 +16,22 @@ beforeEach(function () {
 
 it('dispatches the maintenance sync job from the manual endpoint', function () {
     Queue::fake();
+    config(['queue.default' => 'sync']);
 
     $this->post(route('whatsapp.sync-maintenance'))
         ->assertRedirect()
-        ->assertSessionHas('success', 'Sincronización de mantenimiento iniciada.');
+        ->assertSessionHas('success', 'Sincronización de mantenimiento solicitada.');
 
-    Queue::assertPushed(RunWhatsappSyncMaintenance::class);
+    Queue::assertPushed(RunWhatsappSyncMaintenance::class, function (RunWhatsappSyncMaintenance $job) {
+        return $job->reason === 'manual';
+    });
+
+    $account = WhatsappAccount::query()->where('name', 'whatsapp-sistemas')->firstOrFail();
+
+    expect($account->maintenance_status)->toBe('queued')
+        ->and($account->maintenance_reason)->toBe('manual')
+        ->and($account->maintenance_requested_at)->not->toBeNull()
+        ->and($account->maintenance_started_at)->toBeNull();
 });
 
 it('does not dispatch a duplicate sync while the lock is held', function () {
@@ -32,7 +43,7 @@ it('does not dispatch a duplicate sync while the lock is held', function () {
     try {
         $this->post(route('whatsapp.sync-maintenance'))
             ->assertRedirect()
-            ->assertSessionHas('error', 'Ya hay una sincronización en curso.');
+            ->assertSessionHas('error', 'Ya hay una sincronización en curso o esperando ejecución.');
 
         Queue::assertNotPushed(RunWhatsappSyncMaintenance::class);
     } finally {
@@ -52,12 +63,31 @@ it('does not dispatch a duplicate sync while the persisted status is fresh runni
 
     $this->post(route('whatsapp.sync-maintenance'))
         ->assertRedirect()
-        ->assertSessionHas('error', 'Ya hay una sincronización en curso.');
+        ->assertSessionHas('error', 'Ya hay una sincronización en curso o esperando ejecución.');
+
+    Queue::assertNotPushed(RunWhatsappSyncMaintenance::class);
+});
+
+it('does not dispatch a duplicate sync while the persisted status is fresh queued', function () {
+    Queue::fake();
+
+    WhatsappAccount::query()->create([
+        'name' => 'whatsapp-sistemas',
+        'status' => 'ready',
+        'maintenance_status' => 'queued',
+        'maintenance_requested_at' => now(),
+    ]);
+
+    $this->post(route('whatsapp.sync-maintenance'))
+        ->assertRedirect()
+        ->assertSessionHas('error', 'Ya hay una sincronización en curso o esperando ejecución.');
 
     Queue::assertNotPushed(RunWhatsappSyncMaintenance::class);
 });
 
 it('persists successful maintenance job status', function () {
+    Carbon::setTestNow('2026-10-09 10:00:00');
+
     Artisan::shouldReceive('call')
         ->once()
         ->with('whatsapp:sync-maintenance')
@@ -66,14 +96,19 @@ it('persists successful maintenance job status', function () {
         ->once()
         ->andReturn('Mantenimiento completado.');
 
-    (new RunWhatsappSyncMaintenance)->handle();
+    (new RunWhatsappSyncMaintenance('scheduled'))->handle();
 
     $account = WhatsappAccount::query()->where('name', 'whatsapp-sistemas')->firstOrFail();
 
     expect($account->maintenance_status)->toBe('success')
+        ->and($account->maintenance_reason)->toBe('scheduled')
+        ->and($account->maintenance_requested_at)->not->toBeNull()
         ->and($account->maintenance_started_at)->not->toBeNull()
         ->and($account->maintenance_finished_at)->not->toBeNull()
+        ->and($account->maintenance_duration_seconds)->toBe(0)
         ->and($account->maintenance_error)->toBeNull();
+
+    Carbon::setTestNow();
 });
 
 it('persists failed maintenance job status', function () {

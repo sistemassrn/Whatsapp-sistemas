@@ -109,12 +109,16 @@ type ConnectionState = {
 
 type MaintenanceInfo = {
     status: string | null;
+    reason: string | null;
+    requested_at: string | null;
     started_at: string | null;
     finished_at: string | null;
+    duration_seconds: number | null;
     error: string | null;
     recent_sync_window_hours: number;
     retry_media_window_hours: number;
     retry_media_cooldown_hours: number;
+    retry_media_every_minutes: number;
     scheduler: string;
 };
 
@@ -185,13 +189,35 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const syncMaintenanceForm = useForm({});
     const [maintenanceModalOpen, setMaintenanceModalOpen] = useState(false);
     const maintenanceIsRunning = maintenance.status === 'running';
+    const maintenanceIsBusy = maintenance.status === 'running' || maintenance.status === 'queued';
 
     useEffect(() => {
         incomingMessageSoundRef.current = new Audio(INCOMING_MESSAGE_SOUND_URL);
         incomingMessageSoundRef.current.preload = 'auto';
 
         const warmIncomingSound = () => {
-            incomingMessageSoundRef.current?.load();
+            const audio = incomingMessageSoundRef.current;
+
+            if (!audio) {
+                return;
+            }
+
+            const previousMuted = audio.muted;
+            const previousVolume = audio.volume;
+
+            audio.muted = true;
+            audio.volume = 0.01;
+
+            void audio.play()
+                .then(() => {
+                    audio.pause();
+                    audio.currentTime = 0;
+                })
+                .catch(() => undefined)
+                .finally(() => {
+                    audio.muted = previousMuted;
+                    audio.volume = previousVolume;
+                });
         };
 
         document.addEventListener('pointerdown', warmIncomingSound, { once: true });
@@ -498,6 +524,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
                         <MaintenanceModal
                             maintenance={maintenance}
                             isRunning={maintenanceIsRunning}
+                            isBusy={maintenanceIsBusy}
                             syncing={syncMaintenanceForm.processing}
                             disconnecting={disconnectForm.processing}
                             loggingOut={logoutForm.processing}
@@ -516,6 +543,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
 function MaintenanceModal({
     maintenance,
     isRunning,
+    isBusy,
     syncing,
     disconnecting,
     loggingOut,
@@ -526,6 +554,7 @@ function MaintenanceModal({
 }: {
     maintenance: MaintenanceInfo;
     isRunning: boolean;
+    isBusy: boolean;
     syncing: boolean;
     disconnecting: boolean;
     loggingOut: boolean;
@@ -559,7 +588,7 @@ function MaintenanceModal({
                 <header className="flex items-start justify-between gap-4">
                     <div>
                         <h2 id="maintenance-title" className="text-lg font-semibold">Sincronización</h2>
-                        <p className="app-muted mt-1 text-sm">Revisa mensajes de las últimas {maintenance.recent_sync_window_hours} h y reintenta multimedia de las últimas {maintenance.retry_media_window_hours} h.</p>
+                        <p className="app-muted mt-1 text-sm">Revisa mensajes de las últimas {maintenance.recent_sync_window_hours} h y reintenta multimedia omitida cada {maintenance.retry_media_every_minutes} minutos.</p>
                     </div>
                     <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label="Cerrar sincronización">
                         <X className="size-4" />
@@ -567,10 +596,14 @@ function MaintenanceModal({
                 </header>
 
                 <div className="mt-5 space-y-2 rounded-2xl border border-(--app-border) bg-(--app-surface-soft) p-4 text-sm leading-6">
-                    <p className={isRunning ? 'font-medium text-green-600 dark:text-green-300' : 'font-medium'}>{maintenanceStatusDescription(maintenance.status)}</p>
-                    <p>{maintenanceScheduleDescription(maintenance.scheduler)}</p>
+                    <p className={isRunning ? 'font-medium text-green-600 dark:text-green-300' : 'font-medium'}>{maintenanceStatusDescription(maintenance)}</p>
+                    <p>{maintenance.scheduler}</p>
+                    <p>Tipo: {maintenanceReasonLabel(maintenance.reason)}</p>
+                    <p>{maintenance.requested_at ? `Solicitado el ${formatMaintenanceDateTime(maintenance.requested_at)}` : 'Todavía no hay fecha de solicitud registrada.'}</p>
                     <p>{maintenance.started_at ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}` : 'Todavía no hay fecha de inicio registrada.'}</p>
                     <p>{maintenance.finished_at ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}` : 'Todavía no hay fecha de finalización registrada.'}</p>
+                    <p>{maintenance.duration_seconds !== null ? `Duración: ${formatDuration(maintenance.duration_seconds)}` : 'Duración pendiente.'}</p>
+                    <p className="app-muted">La recuperación de multimedia cubre las últimas {maintenance.retry_media_window_hours} h y respeta un cooldown de {maintenance.retry_media_cooldown_hours} h por mensaje.</p>
                 </div>
 
                 {maintenance.error ? (
@@ -582,8 +615,8 @@ function MaintenanceModal({
 
                 <div className="mt-5 grid gap-2 sm:grid-cols-3">
                     <form onSubmit={onSync}>
-                        <button type="submit" disabled={syncing || isRunning} className="app-button-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
-                            {isRunning ? 'Sincronizando...' : 'Ejecutar sync'}
+                        <button type="submit" disabled={syncing || isBusy} className="app-button-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                            {maintenance.status === 'queued' ? 'Esperando...' : isRunning ? 'Sincronizando...' : 'Solicitar sync'}
                         </button>
                     </form>
                     <form onSubmit={onDisconnect}>
@@ -2207,26 +2240,59 @@ function SearchForm({
     );
 }
 
-function maintenanceStatusDescription(status: string | null): string {
-    if (status === 'running') {
-        return 'La sincronización está en curso.';
+function maintenanceStatusDescription(maintenance: MaintenanceInfo): string {
+    if (maintenance.status === 'queued') {
+        return maintenance.requested_at
+            ? `La sincronización fue solicitada el ${formatMaintenanceDateTime(maintenance.requested_at)} y está esperando ejecución.`
+            : 'La sincronización fue solicitada y está esperando ejecución.';
     }
 
-    if (status === 'success') {
+    if (maintenance.status === 'running') {
+        return maintenance.started_at
+            ? `La sincronización empezó el ${formatMaintenanceDateTime(maintenance.started_at)} y sigue en curso.`
+            : 'La sincronización está en curso.';
+    }
+
+    if (maintenance.status === 'success') {
         return 'La última sincronización finalizó correctamente.';
     }
 
-    if (status === 'failed') {
+    if (maintenance.status === 'failed') {
         return 'La última sincronización falló.';
     }
 
     return 'Todavía no hay sincronizaciones registradas.';
 }
 
-function maintenanceScheduleDescription(scheduler: string): string {
-    return scheduler.toLocaleLowerCase() === 'manual'
-        ? 'Se ejecutó manualmente.'
-        : `Se ejecuta ${scheduler}`;
+function maintenanceReasonLabel(reason: string | null): string {
+    if (reason === 'manual') {
+        return 'Manual';
+    }
+
+    if (reason === 'scheduled') {
+        return 'Programado';
+    }
+
+    if (reason === 'openwa_recovered') {
+        return 'Recuperación OpenWA';
+    }
+
+    return 'Sin registro';
+}
+
+function formatDuration(seconds: number): string {
+    if (seconds < 60) {
+        return `${seconds} s`;
+    }
+
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+
+    if (remainingSeconds === 0) {
+        return `${minutes} min`;
+    }
+
+    return `${minutes} min ${remainingSeconds} s`;
 }
 
 function formatMaintenanceDateTime(value: string): string {

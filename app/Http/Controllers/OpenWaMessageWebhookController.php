@@ -3,19 +3,15 @@
 namespace App\Http\Controllers;
 
 use App\Models\Message;
-use App\Services\OpenWaClient;
 use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
-use App\Services\WhatsappMessageMediaDownloader;
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class OpenWaMessageWebhookController extends Controller
 {
-    public function store(Request $request, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, OpenWaClient $client, WhatsappHistoricalImportFilter $historicalImportFilter): JsonResponse
+    public function store(Request $request, WhatsappMessageImporter $importer, WhatsappHistoricalImportFilter $historicalImportFilter): JsonResponse
     {
         $configuredSecret = config('openwa.webhook_secret');
 
@@ -70,17 +66,6 @@ class OpenWaMessageWebhookController extends Controller
             return response()->json(['message' => 'Missing chat id'], 422);
         }
 
-        $sessionId = $this->firstString($payload, ['sessionId', 'session.id', 'data.sessionId', 'payload.sessionId'])
-            ?? $this->firstString($messagePayload, ['sessionId', 'session.id']);
-
-        if ($sessionId === null && $mediaDownloader->shouldAttempt($message)) {
-            $sessionId = $this->configuredReadySessionId($client);
-        }
-
-        if ($sessionId !== null) {
-            $mediaDownloader->attempt($message, $sessionId, $chatExternalId ?? $message->conversation->external_id, ['source' => 'webhook']);
-        }
-
         return response()->json([
             'status' => 'stored',
             'message_id' => $message->id,
@@ -106,27 +91,6 @@ class OpenWaMessageWebhookController extends Controller
         $expectedSignature = 'sha256='.$expectedHash;
 
         return hash_equals($expectedSignature, $signature) || hash_equals($expectedHash, $signature);
-    }
-
-    private function configuredReadySessionId(OpenWaClient $client): ?string
-    {
-        $sessionName = (string) config('openwa.session_name');
-
-        if (trim($sessionName) === '') {
-            return null;
-        }
-
-        try {
-            $session = $client->findSessionByName($sessionName);
-        } catch (ConnectionException|RequestException) {
-            return null;
-        }
-
-        if ($session === null || $this->sessionStatus($session) !== 'ready') {
-            return null;
-        }
-
-        return $this->sessionId($session);
     }
 
     /**
@@ -160,32 +124,6 @@ class OpenWaMessageWebhookController extends Controller
     }
 
     /**
-     * @param  array<string, mixed>  $messagePayload
-     */
-    private function upsertContact(array $messagePayload, string $chatExternalId, bool $fromMe): ?Contact
-    {
-        if ($this->isGroupChat($messagePayload, $chatExternalId)) {
-            return null;
-        }
-
-        $contactPayload = $this->nestedArray($messagePayload, ['sender', 'contact', '_contact']) ?? $messagePayload;
-        $contactExternalId = $this->firstString($contactPayload, ['id', 'contactId', 'externalId', '_serialized'])
-            ?? $this->firstString($messagePayload, $fromMe ? ['to', 'from'] : ['from', 'to'])
-            ?? $chatExternalId;
-
-        return Contact::query()->updateOrCreate(
-            ['external_id' => $contactExternalId],
-            [
-                'name' => $this->firstString($contactPayload, ['name', 'shortName', 'formattedName'])
-                    ?? $this->firstString($messagePayload, ['notifyName', 'pushName']),
-                'push_name' => $this->firstString($contactPayload, ['pushName', 'notifyName'])
-                    ?? $this->firstString($messagePayload, ['pushName', 'notifyName', 'sender.pushName', 'contact.pushName']),
-                'phone' => $this->firstString($contactPayload, ['phone', 'number', 'user']),
-            ],
-        );
-    }
-
-    /**
      * @param  array<string, mixed>  $payload
      * @param  list<string>  $keys
      */
@@ -207,52 +145,6 @@ class OpenWaMessageWebhookController extends Controller
     }
 
     /**
-     * @param  array<string, mixed>  $session
-     */
-    private function sessionId(array $session): ?string
-    {
-        $sessionId = $this->firstString($session, ['id', '_id', 'sessionId']);
-
-        if ($sessionId !== null) {
-            return $sessionId;
-        }
-
-        foreach (['data', 'session'] as $key) {
-            if (isset($session[$key]) && is_array($session[$key])) {
-                /** @var array<string, mixed> $nestedSession */
-                $nestedSession = $session[$key];
-
-                return $this->sessionId($nestedSession);
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array<string, mixed>  $session
-     */
-    private function sessionStatus(array $session): string
-    {
-        $status = $this->firstString($session, ['status', 'state']);
-
-        if ($status !== null) {
-            return strtolower($status);
-        }
-
-        foreach (['data', 'session'] as $key) {
-            if (isset($session[$key]) && is_array($session[$key])) {
-                /** @var array<string, mixed> $nestedSession */
-                $nestedSession = $session[$key];
-
-                return $this->sessionStatus($nestedSession);
-            }
-        }
-
-        return 'unknown';
-    }
-
-    /**
      * @param  array<string, mixed>  $payload
      * @param  list<string>  $keys
      * @return array<string, mixed>|null
@@ -264,70 +156,6 @@ class OpenWaMessageWebhookController extends Controller
 
             if (is_array($value)) {
                 return $value;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * @param  array<string, mixed>  $messagePayload
-     */
-    private function conversationTitle(array $messagePayload, string $fallback): string
-    {
-        if ($this->isGroupChat($messagePayload, $fallback)) {
-            return $this->firstString($messagePayload, [
-                'chat.name',
-                'chat.title',
-                'chat.formattedTitle',
-                'groupName',
-                'group.name',
-                'group.title',
-            ]) ?? $fallback;
-        }
-
-        return $this->firstString($messagePayload, [
-            'chat.name',
-            'chat.title',
-            'chat.formattedTitle',
-            'contact.name',
-            'notifyName',
-            'pushName',
-            'contact.pushName',
-        ]) ?? $fallback;
-    }
-
-    /**
-     * @param  array<string, mixed>  $messagePayload
-     */
-    private function isGroupChat(array $messagePayload, string $chatExternalId): bool
-    {
-        return data_get($messagePayload, 'isGroup') === true || str_contains($chatExternalId, '@g.us');
-    }
-
-    /**
-     * @param  array<string, mixed>  $messagePayload
-     */
-    private function messageTimestamp(array $messagePayload): ?Carbon
-    {
-        foreach (['timestamp', 't', 'time', 'createdAt', 'date'] as $key) {
-            $value = data_get($messagePayload, $key);
-
-            if (is_numeric($value)) {
-                $timestamp = (int) $value;
-
-                return Carbon::createFromTimestamp(
-                    $timestamp > 9999999999 ? (int) floor($timestamp / 1000) : $timestamp,
-                    config('app.timezone'),
-                );
-            }
-
-            if (is_string($value) && trim($value) !== '') {
-                try {
-                    return Carbon::parse($value)->setTimezone(config('app.timezone'));
-                } catch (\Throwable) {
-                    continue;
-                }
             }
         }
 
