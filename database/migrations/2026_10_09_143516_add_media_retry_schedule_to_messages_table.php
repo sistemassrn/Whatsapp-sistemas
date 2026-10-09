@@ -11,10 +11,17 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('messages', function (Blueprint $table): void {
-            $table->timestamp('media_next_retry_at')->nullable()->after('media_error');
-            $table->unsignedInteger('media_retry_attempts')->default(0)->after('media_next_retry_at');
-        });
+        if (! Schema::hasColumn('messages', 'media_next_retry_at')) {
+            Schema::table('messages', function (Blueprint $table): void {
+                $table->timestamp('media_next_retry_at')->nullable()->after('media_error');
+            });
+        }
+
+        if (! Schema::hasColumn('messages', 'media_retry_attempts')) {
+            Schema::table('messages', function (Blueprint $table): void {
+                $table->unsignedInteger('media_retry_attempts')->default(0)->after('media_next_retry_at');
+            });
+        }
     }
 
     /**
@@ -22,11 +29,16 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('messages', function (Blueprint $table): void {
-            $table->dropColumn([
-                'media_next_retry_at',
-                'media_retry_attempts',
-            ]);
-        });
+        if (Schema::hasColumn('messages', 'media_next_retry_at')) {
+            Schema::table('messages', function (Blueprint $table): void {
+                $table->dropColumn('media_next_retry_at');
+            });
+        }
+
+        if (Schema::hasColumn('messages', 'media_retry_attempts')) {
+            Schema::table('messages', function (Blueprint $table): void {
+                $table->dropColumn('media_retry_attempts');
+            });
+        }
     }
 };
