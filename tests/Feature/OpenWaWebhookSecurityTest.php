@@ -191,7 +191,7 @@ it('reconciles fromMe webhook messages with recent local verifying outbound mess
         'body' => 'Mensaje pendiente de confirmar',
         'type' => 'text',
         'status' => 'verifying',
-        'error_message' => 'No pudimos confirmar el envío. Lo estamos verificando.',
+        'error_message' => null,
         'sent_at' => now(),
     ]);
 

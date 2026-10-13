@@ -755,7 +755,7 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
                         event.preventDefault();
                         onSelect(conversation.external_id);
                     }}
-                    className="min-w-0 flex-1 pr-14"
+                    className="min-w-0 flex-1 pr-14 outline-none focus:outline-none"
                 >
                     <div className="flex items-start justify-between gap-3">
                         <p className="truncate text-sm font-semibold">{title}</p>
@@ -2512,7 +2512,7 @@ function MessageStatusIndicator({ status }: { status: string }) {
         received: 'Recibido',
         seen: 'Enviado',
         sent: 'Enviado',
-        verifying: 'Verificando',
+        verifying: 'Enviando',
     };
 
     if (statusKey === 'pending' || statusKey === 'verifying') {
@@ -2520,10 +2520,9 @@ function MessageStatusIndicator({ status }: { status: string }) {
 
         return (
             <span title={label} aria-label={label} className="inline-flex items-center gap-1 font-medium text-(--app-faint)">
-                <span role="img" className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-faint) text-[9px] leading-none">
+                <span role="img" className="inline-flex size-3.5 items-center justify-center rounded-full text-[9px] leading-none">
                     ◷
                 </span>
-                {statusKey === 'verifying' ? 'Verificando' : null}
             </span>
         );
     }

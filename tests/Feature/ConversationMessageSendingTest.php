@@ -292,12 +292,12 @@ it('marks outbound messages as verifying when OpenWA send confirmation is ambigu
         ]);
 
     $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
-    $response->assertSessionHas('error', 'No pudimos confirmar el envío. Lo estamos verificando.');
+    $response->assertSessionMissing('error');
 
     $message = Message::query()->firstOrFail();
 
     expect($message->status)->toBe('verifying')
-        ->and($message->error_message)->toBe('No pudimos confirmar el envío. Lo estamos verificando.');
+        ->and($message->error_message)->toBeNull();
 });
 
 it('does not duplicate messages for the same idempotency key', function () {

@@ -18,8 +18,6 @@ use League\Flysystem\UnableToReadFile;
 
 class ConversationMessageController extends Controller
 {
-    private const VERIFYING_SEND_ERROR = 'No pudimos confirmar el envío. Lo estamos verificando.';
-
     public function store(StoreConversationMessageRequest $request, Conversation $conversation, OpenWaClient $client): RedirectResponse
     {
         /** @var array{body?: string|null, idempotency_key: string, ptt?: bool, voice?: bool} $validated */
@@ -154,11 +152,9 @@ class ConversationMessageController extends Controller
                     ->with('error', $error);
             }
 
-            $error = self::VERIFYING_SEND_ERROR;
-            $this->markPendingMessagesAsVerifying($messages, $error);
+            $this->markPendingMessagesAsVerifying($messages);
 
-            return $this->redirectToConversation($conversation)
-                ->with('error', $error);
+            return $this->redirectToConversation($conversation);
         }
     }
 
@@ -202,13 +198,13 @@ class ConversationMessageController extends Controller
     /**
      * @param  list<Message>  $messages
      */
-    private function markPendingMessagesAsVerifying(array $messages, string $error): void
+    private function markPendingMessagesAsVerifying(array $messages): void
     {
         foreach ($messages as $message) {
             if ($message->status === 'pending') {
                 $message->update([
                     'status' => 'verifying',
-                    'error_message' => $error,
+                    'error_message' => null,
                 ]);
             }
         }
@@ -394,7 +390,7 @@ class ConversationMessageController extends Controller
     private function readableSendError(ConnectionException|RequestException $exception): string
     {
         if ($exception instanceof ConnectionException) {
-            return self::VERIFYING_SEND_ERROR;
+            return 'No pudimos enviar el mensaje. Reintentá en unos segundos.';
         }
 
         $status = $exception->response->status();
