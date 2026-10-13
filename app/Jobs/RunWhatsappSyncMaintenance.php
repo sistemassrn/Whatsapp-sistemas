@@ -13,8 +13,6 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
 {
     use Queueable;
 
-    public const LOCK_SECONDS = 7200;
-
     public function __construct(public string $reason = 'manual') {}
 
     /**
@@ -22,7 +20,7 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
      */
     public function handle(): void
     {
-        $lock = Cache::lock(self::lockName(), self::LOCK_SECONDS);
+        $lock = Cache::lock(self::lockName(), self::lockSeconds());
 
         if (! $lock->get()) {
             return;
@@ -79,6 +77,11 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
     public static function lockName(): string
     {
         return 'whatsapp:sync-maintenance';
+    }
+
+    public static function lockSeconds(): int
+    {
+        return max(60, WhatsappAccount::maintenanceStaleMinutes() * 60);
     }
 
     private function account(): WhatsappAccount

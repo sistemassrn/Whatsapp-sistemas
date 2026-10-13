@@ -3,7 +3,6 @@
 use App\Models\Conversation;
 use App\Models\Message;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Storage;
 
 beforeEach(function () {
     config([
@@ -236,9 +235,7 @@ it('updates the conversation last message after syncing recent history', functio
         ->body->toBe('Respuesta nueva');
 });
 
-it('downloads omitted media while syncing recent history', function () {
-    Storage::fake('whatsapp_media');
-
+it('imports omitted media without downloading it during recent history sync', function () {
     Http::fake(function ($request) {
         $url = rawurldecode(rawurldecode($request->url()));
 
@@ -256,14 +253,6 @@ it('downloads omitted media while syncing recent history', function () {
                     ],
                     'timestamp' => now()->timestamp,
                 ]],
-            ]);
-        }
-
-        if (str_contains($url, '/sessions/session-1/messages/5493333333333@c.us/wamid-sync-image-1/media')) {
-            return Http::response([
-                'data' => base64_encode('sync-image-bytes'),
-                'mimetype' => 'image/jpeg',
-                'filename' => 'sync.jpg',
             ]);
         }
 
@@ -293,12 +282,12 @@ it('downloads omitted media while syncing recent history', function () {
 
     $message = Message::query()->where('external_id', 'wamid-sync-image-1')->firstOrFail();
 
-    expect($message->media_download_status)->toBe('stored')
+    expect($message->media_download_status)->toBe('omitted')
         ->and($message->media_mime_type)->toBe('image/jpeg')
-        ->and($message->media_filename)->toBe('sync.jpg');
+        ->and($message->media_filename)->toBe('sync.jpg')
+        ->and($message->media_path)->toBeNull();
 
-    Storage::disk('whatsapp_media')->assertExists($message->media_path);
-    expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('sync-image-bytes');
+    Http::assertNotSent(fn ($request): bool => str_contains(rawurldecode(rawurldecode($request->url())), '/media'));
 });
 
 it('skips chats whose chat and message activity are older than the recent sync window', function () {

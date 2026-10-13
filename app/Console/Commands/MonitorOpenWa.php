@@ -161,13 +161,15 @@ class MonitorOpenWa extends Command
 
     private function isMaintenanceRunning(WhatsappAccount $account): bool
     {
-        if ($account->maintenance_status === 'running'
-            && $account->maintenance_started_at !== null
-            && $account->maintenance_started_at->greaterThan(now()->subSeconds(RunWhatsappSyncMaintenance::LOCK_SECONDS))) {
+        if ($account->markMaintenanceStaleIfNeeded()) {
+            $account->refresh();
+        }
+
+        if (in_array($account->maintenance_status, ['queued', 'running'], true)) {
             return true;
         }
 
-        $lock = Cache::lock(RunWhatsappSyncMaintenance::lockName(), RunWhatsappSyncMaintenance::LOCK_SECONDS);
+        $lock = Cache::lock(RunWhatsappSyncMaintenance::lockName(), RunWhatsappSyncMaintenance::lockSeconds());
 
         if (! $lock->get()) {
             return true;

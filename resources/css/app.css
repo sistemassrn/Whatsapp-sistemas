@@ -164,7 +164,14 @@
     }
 
     .app-focus-ring:focus-visible {
-        outline-color: var(--app-focus);
+        outline: none;
+    }
+
+    .app-button:focus,
+    .app-button:focus-visible,
+    .theme-toggle:focus,
+    .theme-toggle:focus-visible {
+        outline: none;
     }
 
     .app-button {

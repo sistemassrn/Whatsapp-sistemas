@@ -37,7 +37,7 @@ it('dispatches the maintenance sync job from the manual endpoint', function () {
 it('does not dispatch a duplicate sync while the lock is held', function () {
     Queue::fake();
 
-    $lock = Cache::lock(RunWhatsappSyncMaintenance::lockName(), RunWhatsappSyncMaintenance::LOCK_SECONDS);
+    $lock = Cache::lock(RunWhatsappSyncMaintenance::lockName(), RunWhatsappSyncMaintenance::lockSeconds());
     $lock->get();
 
     try {
@@ -49,6 +49,47 @@ it('does not dispatch a duplicate sync while the lock is held', function () {
     } finally {
         $lock->release();
     }
+});
+
+it('marks stale persisted maintenance as failed before queuing a new manual sync', function () {
+    Queue::fake();
+    config(['openwa.sync_maintenance_stale_minutes' => 90]);
+
+    WhatsappAccount::query()->create([
+        'name' => 'whatsapp-sistemas',
+        'status' => 'ready',
+        'maintenance_status' => 'running',
+        'maintenance_started_at' => now()->subMinutes(91),
+    ]);
+
+    $this->post(route('whatsapp.sync-maintenance'))
+        ->assertRedirect()
+        ->assertSessionHas('success', 'Sincronización de mantenimiento solicitada.');
+
+    Queue::assertPushed(RunWhatsappSyncMaintenance::class);
+
+    $account = WhatsappAccount::query()->where('name', 'whatsapp-sistemas')->firstOrFail();
+
+    expect($account->maintenance_status)->toBe('queued')
+        ->and($account->maintenance_reason)->toBe('manual')
+        ->and($account->maintenance_error)->toBeNull();
+});
+
+it('marks stale queued maintenance as failed when checking the conversation maintenance props', function () {
+    $account = WhatsappAccount::query()->create([
+        'name' => 'whatsapp-sistemas',
+        'status' => 'ready',
+        'maintenance_status' => 'queued',
+        'maintenance_requested_at' => now()->subMinutes(91),
+    ]);
+
+    $account->markMaintenanceStaleIfNeeded();
+    $account->refresh();
+
+    expect($account->maintenance_status)->toBe('failed')
+        ->and($account->maintenance_finished_at)->not->toBeNull()
+        ->and($account->maintenance_duration_seconds)->toBeGreaterThanOrEqual(91 * 60)
+        ->and($account->maintenance_error)->toBe(WhatsappAccount::STALE_MAINTENANCE_ERROR);
 });
 
 it('does not dispatch a duplicate sync while the persisted status is fresh running', function () {

@@ -9,7 +9,6 @@ use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
 use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
-use App\Services\WhatsappMessageMediaDownloader;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
@@ -32,7 +31,7 @@ class SyncRecentWhatsapp extends Command
     /**
      * Execute the console command.
      */
-    public function handle(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, WhatsappHistoricalImportFilter $filter): int
+    public function handle(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappHistoricalImportFilter $filter): int
     {
         $sessionName = (string) config('openwa.session_name');
         $limitChats = max(1, (int) $this->option('limit-chats'));
@@ -94,12 +93,13 @@ class SyncRecentWhatsapp extends Command
                 continue;
             }
 
-            $this->syncChat($client, $importer, $mediaDownloader, $filter, $sessionId, $chat, $limitMessages, $syncCutoff);
+            $this->syncChat($client, $importer, $filter, $sessionId, $chat, $limitMessages, $syncCutoff);
         }
 
         $this->info("Chats escaneados: {$this->chatsScanned}");
         $this->info("Mensajes creados: {$this->messagesCreated}");
         $this->info("Mensajes omitidos: {$this->messagesSkipped}");
+        $this->info('Multimedia omitida: se recupera con whatsapp:retry-media.');
         $this->info("Fallos: {$this->failures}");
 
         return self::SUCCESS;
@@ -125,7 +125,7 @@ class SyncRecentWhatsapp extends Command
     /**
      * @param  array<string, mixed>  $chat
      */
-    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappMessageMediaDownloader $mediaDownloader, WhatsappHistoricalImportFilter $filter, string $sessionId, array $chat, int $limitMessages, CarbonInterface $syncCutoff): void
+    private function syncChat(OpenWaClient $client, WhatsappMessageImporter $importer, WhatsappHistoricalImportFilter $filter, string $sessionId, array $chat, int $limitMessages, CarbonInterface $syncCutoff): void
     {
         $chatExternalId = $this->firstString($chat, ['id', 'chatId', 'externalId', '_data.id._serialized', '_data.id']);
 
@@ -177,7 +177,6 @@ class SyncRecentWhatsapp extends Command
             $message = $result['message'];
 
             if ($message instanceof Message) {
-                $mediaDownloader->attempt($message, $sessionId, $chatExternalId, ['source' => 'sync-recent']);
                 $conversation = $message->conversation;
             }
         }

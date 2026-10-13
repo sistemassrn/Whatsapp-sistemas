@@ -28,7 +28,7 @@ class SyncWhatsappMaintenance extends Command
             return self::FAILURE;
         }
 
-        $this->info('Sincronización reciente completada. Reintentando medios pendientes.');
+        $this->info('Sincronización reciente completada. La multimedia omitida se recupera con retry-media.');
 
         $retryResult = $this->call('whatsapp:retry-media', [
             '--limit' => config('openwa.retry_media.limit'),

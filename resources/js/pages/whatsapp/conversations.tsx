@@ -119,6 +119,7 @@ type MaintenanceInfo = {
     retry_media_window_hours: number;
     retry_media_cooldown_hours: number;
     retry_media_every_minutes: number;
+    sync_maintenance_stale_minutes: number;
     scheduler: string;
 };
 
@@ -588,7 +589,6 @@ function MaintenanceModal({
                 <header className="flex items-start justify-between gap-4">
                     <div>
                         <h2 id="maintenance-title" className="text-lg font-semibold">Sincronización</h2>
-                        <p className="app-muted mt-1 text-sm">Revisa mensajes de las últimas {maintenance.recent_sync_window_hours} h y reintenta multimedia omitida cada {maintenance.retry_media_every_minutes} minutos.</p>
                     </div>
                     <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label="Cerrar sincronización">
                         <X className="size-4" />
@@ -599,11 +599,11 @@ function MaintenanceModal({
                     <p className={isRunning ? 'font-medium text-green-600 dark:text-green-300' : 'font-medium'}>{maintenanceStatusDescription(maintenance)}</p>
                     <p>{maintenance.scheduler}</p>
                     <p>Tipo: {maintenanceReasonLabel(maintenance.reason)}</p>
-                    <p>{maintenance.requested_at ? `Solicitado el ${formatMaintenanceDateTime(maintenance.requested_at)}` : 'Todavía no hay fecha de solicitud registrada.'}</p>
+                    {/* <p>{maintenance.requested_at ? `Solicitado el ${formatMaintenanceDateTime(maintenance.requested_at)}` : 'Todavía no hay fecha de solicitud registrada.'}</p> */}
                     <p>{maintenance.started_at ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}` : 'Todavía no hay fecha de inicio registrada.'}</p>
                     <p>{maintenance.finished_at ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}` : 'Todavía no hay fecha de finalización registrada.'}</p>
                     <p>{maintenance.duration_seconds !== null ? `Duración: ${formatDuration(maintenance.duration_seconds)}` : 'Duración pendiente.'}</p>
-                    <p className="app-muted">La recuperación de multimedia cubre las últimas {maintenance.retry_media_window_hours} h y respeta un cooldown de {maintenance.retry_media_cooldown_hours} h por mensaje.</p>
+                    {/* <p className="app-muted">La recuperación de mutimedia cubre las últimas {maintenance.retry_media_window_hours} h y respeta un cooldown de {maintenance.retry_media_cooldown_hours} h por mensaje.</p> */}
                 </div>
 
                 {maintenance.error ? (
@@ -2248,6 +2248,10 @@ function maintenanceStatusDescription(maintenance: MaintenanceInfo): string {
     }
 
     if (maintenance.status === 'running') {
+        if (maintenance.started_at && maintenance.duration_seconds !== null && maintenance.duration_seconds >= maintenance.sync_maintenance_stale_minutes * 60) {
+            return 'La sincronización parece demorada. Si se interrumpió, el sistema la marcará como fallida para permitir un nuevo intento.';
+        }
+
         return maintenance.started_at
             ? `La sincronización empezó el ${formatMaintenanceDateTime(maintenance.started_at)} y sigue en curso.`
             : 'La sincronización está en curso.';
@@ -2258,7 +2262,9 @@ function maintenanceStatusDescription(maintenance: MaintenanceInfo): string {
     }
 
     if (maintenance.status === 'failed') {
-        return 'La última sincronización falló.';
+        return maintenance.error
+            ? 'La última sincronización falló o fue interrumpida.'
+            : 'La última sincronización falló.';
     }
 
     return 'Todavía no hay sincronizaciones registradas.';

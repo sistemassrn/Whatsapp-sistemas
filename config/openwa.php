@@ -25,6 +25,8 @@ return [
 
     'recovery_sync_cooldown_minutes' => (int) env('OPENWA_RECOVERY_SYNC_COOLDOWN_MINUTES', 15),
 
+    'sync_maintenance_stale_minutes' => (int) env('OPENWA_SYNC_MAINTENANCE_STALE_MINUTES', 90),
+
     'import_unknown_historical_chats' => (bool) env('OPENWA_IMPORT_UNKNOWN_HISTORICAL_CHATS', false),
 
     'sync_recent' => [

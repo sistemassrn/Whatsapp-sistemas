@@ -41,19 +41,17 @@ class WhatsappSyncMaintenanceController extends Controller
     {
         $account = $this->account(false);
 
-        if ($account?->maintenance_status === 'running'
-            && $account->maintenance_started_at !== null
-            && $account->maintenance_started_at->greaterThan(now()->subSeconds(RunWhatsappSyncMaintenance::LOCK_SECONDS))) {
-            return true;
+        if ($account !== null) {
+            if ($account->markMaintenanceStaleIfNeeded()) {
+                $account->refresh();
+            }
+
+            if (in_array($account->maintenance_status, ['queued', 'running'], true)) {
+                return true;
+            }
         }
 
-        if ($account?->maintenance_status === 'queued'
-            && $account->maintenance_requested_at !== null
-            && $account->maintenance_requested_at->greaterThan(now()->subSeconds(RunWhatsappSyncMaintenance::LOCK_SECONDS))) {
-            return true;
-        }
-
-        $lock = Cache::lock(RunWhatsappSyncMaintenance::lockName(), RunWhatsappSyncMaintenance::LOCK_SECONDS);
+        $lock = Cache::lock(RunWhatsappSyncMaintenance::lockName(), RunWhatsappSyncMaintenance::lockSeconds());
 
         if (! $lock->get()) {
             return true;

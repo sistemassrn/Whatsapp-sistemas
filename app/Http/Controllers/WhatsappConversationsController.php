@@ -239,13 +239,17 @@ class WhatsappConversationsController extends Controller
     }
 
     /**
-     * @return array{status: string|null, reason: string|null, requested_at: string|null, started_at: string|null, finished_at: string|null, duration_seconds: int|null, error: string|null, recent_sync_window_hours: int, retry_media_window_hours: int, retry_media_cooldown_hours: int, retry_media_every_minutes: int, scheduler: string}
+     * @return array{status: string|null, reason: string|null, requested_at: string|null, started_at: string|null, finished_at: string|null, duration_seconds: int|null, error: string|null, recent_sync_window_hours: int, retry_media_window_hours: int, retry_media_cooldown_hours: int, retry_media_every_minutes: int, sync_maintenance_stale_minutes: int, scheduler: string}
      */
     private function maintenanceInfo(): array
     {
         $account = WhatsappAccount::query()
             ->where('name', (string) config('openwa.session_name'))
             ->first();
+
+        if ($account?->markMaintenanceStaleIfNeeded()) {
+            $account->refresh();
+        }
 
         return [
             'status' => $account?->maintenance_status,
@@ -259,6 +263,7 @@ class WhatsappConversationsController extends Controller
             'retry_media_window_hours' => (int) config('openwa.retry_media_window_hours'),
             'retry_media_cooldown_hours' => (int) config('openwa.retry_media_cooldown_hours'),
             'retry_media_every_minutes' => 5,
+            'sync_maintenance_stale_minutes' => WhatsappAccount::maintenanceStaleMinutes(),
             'scheduler' => 'Programado todos los días a las 7:00 a. m. (Argentina)',
         ];
     }
