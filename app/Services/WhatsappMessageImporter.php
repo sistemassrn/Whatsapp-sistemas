@@ -169,15 +169,18 @@ class WhatsappMessageImporter
         }
 
         $body = $messageData['body'] ?? null;
+        $reconciliationCutoff = now()
+            ->subMinutes(self::OUTBOUND_RECONCILIATION_MINUTES)
+            ->format('Ymd H:i:s.v');
         $candidates = Message::query()
             ->where('conversation_id', $conversation->id)
             ->where('direction', 'outbound')
             ->whereNull('external_id')
             ->where('type', $messageType)
             ->whereIn('status', ['pending', 'verifying', 'failed'])
-            ->where(function ($query): void {
-                $query->where('created_at', '>=', now()->subMinutes(self::OUTBOUND_RECONCILIATION_MINUTES))
-                    ->orWhere('sent_at', '>=', now()->subMinutes(self::OUTBOUND_RECONCILIATION_MINUTES));
+            ->where(function ($query) use ($reconciliationCutoff): void {
+                $query->where('created_at', '>=', $reconciliationCutoff)
+                    ->orWhere('sent_at', '>=', $reconciliationCutoff);
             })
             ->latest('id')
             ->get();

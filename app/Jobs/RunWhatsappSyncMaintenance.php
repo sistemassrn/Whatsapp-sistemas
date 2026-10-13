@@ -57,7 +57,7 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
             $account->forceFill([
                 'maintenance_status' => 'success',
                 'maintenance_finished_at' => $finishedAt,
-                'maintenance_duration_seconds' => max(0, $startedAt->diffInSeconds($finishedAt)),
+                'maintenance_duration_seconds' => (int) round(max(0, $startedAt->diffInSeconds($finishedAt))),
                 'maintenance_error' => null,
             ])->save();
         } catch (Throwable $exception) {
@@ -102,7 +102,7 @@ class RunWhatsappSyncMaintenance implements ShouldQueue
         $account->forceFill([
             'maintenance_status' => 'failed',
             'maintenance_finished_at' => $finishedAt,
-            'maintenance_duration_seconds' => $startedAt === null ? null : max(0, $startedAt->diffInSeconds($finishedAt)),
+            'maintenance_duration_seconds' => $startedAt === null ? null : (int) round(max(0, $startedAt->diffInSeconds($finishedAt))),
             'maintenance_error' => mb_substr($message, 0, 65000),
         ])->save();
     }

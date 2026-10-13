@@ -285,7 +285,7 @@ class WhatsappConversationsController extends Controller
         return Message::query()
             ->where('conversation_id', $conversation->id)
             ->when($conversation->last_read_at !== null, function (Builder $query) use ($conversation): void {
-                $query->whereRaw('COALESCE(sent_at, received_at, created_at) > ?', [$conversation->last_read_at]);
+                $query->whereRaw('COALESCE(sent_at, received_at, created_at) > ?', [$conversation->last_read_at->format('Ymd H:i:s.v')]);
             })
             ->orderByRaw('COALESCE(sent_at, received_at, created_at) asc')
             ->orderBy('id')
