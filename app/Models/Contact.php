@@ -15,6 +15,9 @@ use Illuminate\Support\Carbon;
  * @property string|null $profile_photo_url
  * @property Carbon|null $profile_photo_fetched_at
  * @property string|null $profile_photo_error
+ * @property bool|null $is_my_contact
+ * @property string|null $source
+ * @property Carbon|null $last_synced_at
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property-read Collection<int, Conversation> $conversations
@@ -32,6 +35,9 @@ class Contact extends WhatsappModel
         'profile_photo_url',
         'profile_photo_fetched_at',
         'profile_photo_error',
+        'is_my_contact',
+        'source',
+        'last_synced_at',
     ];
 
     /**
@@ -43,6 +49,8 @@ class Contact extends WhatsappModel
     {
         return [
             'profile_photo_fetched_at' => 'datetime',
+            'is_my_contact' => 'boolean',
+            'last_synced_at' => 'datetime',
         ];
     }
 

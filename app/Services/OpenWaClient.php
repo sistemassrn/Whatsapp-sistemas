@@ -109,6 +109,20 @@ class OpenWaClient
     /**
      * @return array<string, mixed>|array<int, mixed>
      */
+    public function contacts(string $sessionId, int $limit = 100, int $offset = 0): array
+    {
+        return $this->request()
+            ->get("sessions/{$sessionId}/contacts", [
+                'limit' => $limit,
+                'offset' => $offset,
+            ])
+            ->throw()
+            ->json();
+    }
+
+    /**
+     * @return array<string, mixed>|array<int, mixed>
+     */
     public function chats(string $sessionId, int $limit = 30, int $offset = 0): array
     {
         return $this->request()
@@ -211,6 +225,27 @@ class OpenWaClient
                 'chatId' => $chatId,
                 'text' => $text,
             ])
+            ->throw()
+            ->json();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendContactMessage(string $sessionId, string $chatId, string $contactName, string $contactNumber, ?string $quotedMessageId = null): array
+    {
+        $payload = [
+            'chatId' => $chatId,
+            'contactName' => $contactName,
+            'contactNumber' => $contactNumber,
+        ];
+
+        if ($quotedMessageId !== null && $quotedMessageId !== '') {
+            $payload['quotedMessageId'] = $quotedMessageId;
+        }
+
+        return $this->request()
+            ->post("sessions/{$sessionId}/messages/send-contact", $payload)
             ->throw()
             ->json();
     }

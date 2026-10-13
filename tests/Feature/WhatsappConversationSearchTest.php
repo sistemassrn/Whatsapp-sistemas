@@ -258,12 +258,12 @@ it('exposes a secondary conversation description without duplicating the title',
         ->assertOk()
         ->assertInertia(fn (Assert $page) => $page
             ->component('whatsapp/conversations')
-            ->where('conversations.0.external_id', $savedConversation->external_id)
-            ->where('conversations.0.title', 'Leo')
-            ->where('conversations.0.display_description', null)
-            ->where('conversations.1.external_id', $unsavedConversation->external_id)
-            ->where('conversations.1.title', '5491199990000')
-            ->where('conversations.1.display_description', 'Leo'),
+            ->where('conversations.0.external_id', $unsavedConversation->external_id)
+            ->where('conversations.0.title', '5491199990000')
+            ->where('conversations.0.display_description', 'Leo')
+            ->where('conversations.1.external_id', $savedConversation->external_id)
+            ->where('conversations.1.title', 'Leo')
+            ->where('conversations.1.display_description', null),
         );
 });
 
@@ -599,6 +599,48 @@ it('uses the newest message as conversation preview when cached last message is 
         );
 });
 
+it('orders conversations by newest message activity with last message fallback', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $fallbackConversation = Conversation::query()->create([
+        'external_id' => '5491111111100@c.us',
+        'title' => 'Sin mensajes reciente',
+        'last_message_at' => now()->addMinute(),
+    ]);
+
+    $messageConversation = Conversation::query()->create([
+        'external_id' => '5491111111101@c.us',
+        'title' => 'Mensaje reciente',
+        'last_message_at' => now()->subDay(),
+    ]);
+
+    Message::query()->create([
+        'conversation_id' => $messageConversation->id,
+        'direction' => 'inbound',
+        'body' => 'Mensaje más reciente que el cache',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $olderFallbackConversation = Conversation::query()->create([
+        'external_id' => '5491111111102@c.us',
+        'title' => 'Sin mensajes anterior',
+        'last_message_at' => now()->subHour(),
+    ]);
+
+    $this->get(route('whatsapp.conversations'))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->component('whatsapp/conversations')
+            ->where('conversations.0.external_id', $fallbackConversation->external_id)
+            ->where('conversations.1.external_id', $messageConversation->external_id)
+            ->where('conversations.2.external_id', $olderFallbackConversation->external_id),
+        );
+});
+
 it('uses media type fallback as conversation preview when media has no caption', function () {
     $this->withoutMiddleware(Authenticate::class);
     $this->withoutVite();
@@ -776,6 +818,167 @@ it('unhides a hidden conversation when a new webhook message is imported', funct
     expect($conversation->hidden_at)->toBeNull()
         ->and($conversation->hidden_reason)->toBeNull()
         ->and($conversation->unread_count)->toBe(1);
+});
+
+it('searches agenda contacts by display fields and returns lightweight contact data', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $matchingByName = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+        'name' => 'Agenda Buscada',
+        'push_name' => 'Alias Uno',
+        'phone' => '5491111111111',
+        'profile_photo_url' => 'https://cdn.example/avatar.jpg',
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    $matchingByPushName = Contact::query()->create([
+        'external_id' => '5492222222222@c.us',
+        'push_name' => 'Persona Buscada',
+        'phone' => '5492222222222',
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    Contact::query()->create([
+        'external_id' => '5493333333333@c.us',
+        'name' => 'Otro Contacto',
+        'phone' => '5493333333333',
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    $this->getJson(route('whatsapp.contacts.index', ['search' => 'buscada']))
+        ->assertOk()
+        ->assertJsonCount(2, 'contacts')
+        ->assertJsonPath('contacts.0.id', $matchingByName->id)
+        ->assertJsonPath('contacts.0.external_id', $matchingByName->external_id)
+        ->assertJsonPath('contacts.0.display_name', 'Agenda Buscada')
+        ->assertJsonPath('contacts.0.secondary_label', '5491111111111')
+        ->assertJsonPath('contacts.0.phone', '5491111111111')
+        ->assertJsonPath('contacts.0.usable_phone', true)
+        ->assertJsonPath('contacts.0.profile_photo_url', 'https://cdn.example/avatar.jpg')
+        ->assertJsonPath('contacts.0.avatar_url', 'https://cdn.example/avatar.jpg')
+        ->assertJsonPath('contacts.0.initials', 'AB')
+        ->assertJsonPath('contacts.1.id', $matchingByPushName->id);
+});
+
+it('marks agenda contacts without usable phones for selector disabling', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    Contact::query()->create([
+        'external_id' => '123456789012345678901234@lid',
+        'name' => 'Sin Teléfono',
+        'phone' => null,
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    $this->getJson(route('whatsapp.contacts.index', ['search' => 'Sin Teléfono']))
+        ->assertOk()
+        ->assertJsonCount(1, 'contacts')
+        ->assertJsonPath('contacts.0.display_name', 'Sin Teléfono')
+        ->assertJsonPath('contacts.0.phone', null)
+        ->assertJsonPath('contacts.0.usable_phone', false);
+});
+
+it('searches agenda contacts by phone and external id', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $matchingByPhone = Contact::query()->create([
+        'external_id' => '5491166666666@c.us',
+        'name' => 'Cliente Teléfono',
+        'phone' => '5491166666666',
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    $matchingByExternalId = Contact::query()->create([
+        'external_id' => '5491177777777@c.us',
+        'name' => 'Cliente Id',
+        'phone' => '5491177777777',
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    Contact::query()->create([
+        'external_id' => '5491188888888@c.us',
+        'name' => 'Otro Contacto',
+        'phone' => '5491188888888',
+        'is_my_contact' => true,
+        'source' => 'openwa-addressbook',
+    ]);
+
+    $this->getJson(route('whatsapp.contacts.index', ['search' => '66666666']))
+        ->assertOk()
+        ->assertJsonCount(1, 'contacts')
+        ->assertJsonPath('contacts.0.id', $matchingByPhone->id);
+
+    $this->getJson(route('whatsapp.contacts.index', ['search' => '7777777@c.us']))
+        ->assertOk()
+        ->assertJsonCount(1, 'contacts')
+        ->assertJsonPath('contacts.0.id', $matchingByExternalId->id);
+});
+
+it('opens an existing contact conversation and makes a hidden conversation visible', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491144444444@c.us',
+        'name' => 'Cliente Existente',
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => $contact->external_id,
+        'contact_id' => null,
+        'title' => 'Chat viejo',
+        'hidden_at' => now(),
+        'hidden_reason' => 'user_hidden',
+    ]);
+
+    $this->post(route('whatsapp.contacts.open-conversation', $contact))
+        ->assertRedirect(route('whatsapp.conversations', ['chat' => $contact->external_id]));
+
+    $conversation->refresh();
+
+    expect($conversation->contact_id)->toBe($contact->id)
+        ->and($conversation->hidden_at)->toBeNull()
+        ->and($conversation->hidden_reason)->toBeNull();
+});
+
+it('creates an empty conversation when opening a contact without an existing conversation', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491155555555@c.us',
+        'push_name' => 'Cliente Nuevo',
+        'phone' => '5491155555555',
+    ]);
+
+    $this->post(route('whatsapp.contacts.open-conversation', $contact))
+        ->assertRedirect(route('whatsapp.conversations', ['chat' => $contact->external_id]));
+
+    $conversation = Conversation::query()->where('external_id', $contact->external_id)->firstOrFail();
+
+    expect($conversation->contact_id)->toBe($contact->id)
+        ->and($conversation->title)->toBe('Cliente Nuevo')
+        ->and($conversation->last_message_at)->toBeNull()
+        ->and($conversation->messages()->count())->toBe(0);
+});
+
+it('does not create conversations for contacts without a usable external id', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '',
+        'name' => 'Sin WhatsApp',
+    ]);
+
+    $this->post(route('whatsapp.contacts.open-conversation', $contact))
+        ->assertRedirect(route('whatsapp.conversations'));
+
+    expect(Conversation::query()->count())->toBe(0);
 });
 
 function bindReadyOpenWaClient(): void

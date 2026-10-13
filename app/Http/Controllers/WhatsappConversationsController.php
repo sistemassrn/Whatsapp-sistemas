@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\WhatsappAccount;
 use App\Services\WhatsappConnectionStatus;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -45,7 +47,7 @@ class WhatsappConversationsController extends Controller
             ->with(['contact', 'lastMessage'])
             ->tap(fn (Builder $query): Builder => self::withLatestMessageSnapshot($query))
             ->when($chatSearch !== '', fn (Builder $query): Builder => self::applyChatSearch($query, $chatSearch))
-            ->orderByDesc('latest_message_timestamp')
+            ->orderByRaw(self::latestMessageActivityOrderExpression().' desc')
             ->orderByDesc('updated_at');
 
         $conversations = $conversationsQuery
@@ -210,6 +212,63 @@ class WhatsappConversationsController extends Controller
         ])->with('success', 'Chat eliminado de esta app. No se borró en WhatsApp.');
     }
 
+    public function contacts(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'search' => ['nullable', 'string', 'max:100'],
+            'include' => ['nullable', 'string', 'in:all'],
+            'include_discovered' => ['nullable', 'boolean'],
+        ]);
+
+        $search = trim((string) ($validated['search'] ?? ''));
+        $includeAll = ($validated['include'] ?? null) === 'all'
+            || (bool) ($validated['include_discovered'] ?? false);
+
+        $contacts = Contact::query()
+            ->when(! $includeAll, fn (Builder $query): Builder => self::applyAgendaContactFilter($query))
+            ->when($search !== '', fn (Builder $query): Builder => self::applyContactSearch($query, $search))
+            ->orderByRaw('COALESCE(NULLIF(name, \'\'), NULLIF(push_name, \'\'), NULLIF(phone, \'\'), external_id) asc')
+            ->limit(25)
+            ->get();
+
+        return response()->json([
+            'contacts' => $contacts->map(fn (Contact $contact): array => self::agendaContactPayload($contact)),
+        ]);
+    }
+
+    public function openContact(Request $request, Contact $contact): RedirectResponse
+    {
+        $externalId = trim($contact->external_id);
+
+        if ($externalId === '') {
+            return redirect()->route('whatsapp.conversations')
+                ->with('error', 'No se puede abrir un contacto sin identificador de WhatsApp.');
+        }
+
+        $conversation = Conversation::query()
+            ->where('external_id', $externalId)
+            ->first();
+
+        if ($conversation === null) {
+            $conversation = Conversation::query()->create([
+                'external_id' => $externalId,
+                'contact_id' => $contact->id,
+                'title' => self::contactTitleFallback($contact),
+                'last_message_at' => null,
+                'hidden_at' => null,
+                'hidden_reason' => null,
+            ]);
+        } else {
+            $conversation->forceFill([
+                'contact_id' => $conversation->contact_id ?? $contact->id,
+                'hidden_at' => null,
+                'hidden_reason' => null,
+            ])->save();
+        }
+
+        return redirect()->route('whatsapp.conversations', ['chat' => $conversation->external_id]);
+    }
+
     private function markConversationRead(Conversation $conversation): void
     {
         if ($conversation->unread_count === 0 && $conversation->marked_unread_at === null) {
@@ -331,6 +390,7 @@ class WhatsappConversationsController extends Controller
         }
 
         return match ($message->type) {
+            'contact' => 'Contacto',
             'image' => 'Imagen',
             'video' => 'Video',
             'audio' => 'Audio',
@@ -383,6 +443,76 @@ class WhatsappConversationsController extends Controller
         }
 
         return null;
+    }
+
+    private static function contactTitleFallback(Contact $contact): string
+    {
+        foreach ([$contact->name, $contact->push_name, $contact->phone, $contact->external_id] as $candidate) {
+            $displayName = self::cleanDisplayIdentifier($candidate);
+
+            if ($displayName !== null) {
+                return $displayName;
+            }
+        }
+
+        return $contact->external_id;
+    }
+
+    /**
+     * @return array{id: int, external_id: string, display_name: string, secondary_label: string|null, phone: string|null, usable_phone: bool, profile_photo_url: string|null, avatar_url: string|null, initials: string}
+     */
+    private static function agendaContactPayload(Contact $contact): array
+    {
+        $displayName = self::contactTitleFallback($contact);
+        $secondaryLabel = self::contactSecondaryLabel($contact, $displayName);
+        $phone = self::cleanDisplayIdentifier($contact->phone);
+
+        return [
+            'id' => $contact->id,
+            'external_id' => $contact->external_id,
+            'display_name' => $displayName,
+            'secondary_label' => $secondaryLabel,
+            'phone' => $phone,
+            'usable_phone' => self::usableContactPhone($contact) !== null,
+            'profile_photo_url' => $contact->profile_photo_url,
+            'avatar_url' => $contact->profile_photo_url,
+            'initials' => self::initials($displayName),
+        ];
+    }
+
+    private static function contactSecondaryLabel(Contact $contact, string $displayName): ?string
+    {
+        foreach ([$contact->phone, $contact->push_name, $contact->external_id] as $candidate) {
+            $label = self::cleanDisplayIdentifier($candidate);
+
+            if ($label !== null && strcasecmp($label, $displayName) !== 0) {
+                return $label;
+            }
+        }
+
+        return null;
+    }
+
+    private static function initials(string $displayName): string
+    {
+        $initials = collect(preg_split('/\s+/', $displayName) ?: [])
+            ->filter()
+            ->take(2)
+            ->map(fn (string $part): string => Str::upper(Str::substr($part, 0, 1)))
+            ->implode('');
+
+        return $initials !== '' ? $initials : '?';
+    }
+
+    private static function usableContactPhone(Contact $contact): ?string
+    {
+        $phone = preg_replace('/\D+/', '', (string) $contact->phone);
+
+        if (! is_string($phone) || $phone === '' || strlen($phone) < 6 || strlen($phone) > 15) {
+            return null;
+        }
+
+        return $phone;
     }
 
     private static function cleanDisplayIdentifier(?string $value): ?string
@@ -438,12 +568,44 @@ class WhatsappConversationsController extends Controller
         });
     }
 
+    private static function applyContactSearch(Builder $query, string $search): Builder
+    {
+        $like = self::likeContains($search);
+
+        return $query->where(function (Builder $query) use ($like): void {
+            $query
+                ->whereRaw(self::likeSql('name'), [$like])
+                ->orWhereRaw(self::likeSql('push_name'), [$like])
+                ->orWhereRaw(self::likeSql('phone'), [$like])
+                ->orWhereRaw(self::likeSql('external_id'), [$like]);
+        });
+    }
+
+    private static function applyAgendaContactFilter(Builder $query): Builder
+    {
+        return $query->where(function (Builder $query): void {
+            $query
+                ->where('is_my_contact', true)
+                ->orWhere('source', 'openwa-addressbook');
+        });
+    }
+
     private static function withLatestMessageSnapshot(Builder $query): Builder
     {
         return $query->addSelect([
             'latest_message_id' => self::latestMessageSubquery()->select('id'),
-            'latest_message_timestamp' => self::latestMessageSubquery()->selectRaw('COALESCE(sent_at, received_at, created_at)'),
+            'latest_message_timestamp' => self::latestMessageTimestampSubquery(),
         ]);
+    }
+
+    private static function latestMessageActivityOrderExpression(): string
+    {
+        return 'COALESCE(('.self::latestMessageTimestampSubquery()->toSql().'), conversations.last_message_at)';
+    }
+
+    private static function latestMessageTimestampSubquery(): Builder
+    {
+        return self::latestMessageSubquery()->selectRaw('COALESCE(sent_at, received_at, created_at)');
     }
 
     private static function latestMessageSubquery(): Builder

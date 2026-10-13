@@ -127,6 +127,70 @@ it('keeps webhook audio metadata when OpenWA omits the media payload', function 
         ->and($message->media_metadata['duration'])->toBe(12);
 });
 
+it('imports webhook contact vcards as contact messages with parsed metadata', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $vcard = implode("\n", [
+        'BEGIN:VCARD',
+        'VERSION:3.0',
+        'FN:María Demo',
+        'ORG:Sistemas Demo',
+        'TEL;TYPE=CELL:+54 9 11 1234-5678',
+        'END:VCARD',
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'id' => 'webhook-contact-1',
+        'chatId' => '5491100000000@c.us',
+        'from' => '5491100000000@c.us',
+        'type' => 'contact',
+        'body' => $vcard,
+    ])->assertOk()
+        ->assertJson(['status' => 'stored']);
+
+    $message = Message::query()->firstOrFail();
+
+    expect($message->type)->toBe('contact')
+        ->and($message->body)->toBe('María Demo')
+        ->and($message->media_metadata['contact']['name'])->toBe('María Demo')
+        ->and($message->media_metadata['contact']['phone'])->toBe('+5491112345678')
+        ->and($message->media_metadata['contact']['organization'])->toBe('Sistemas Demo')
+        ->and($message->media_metadata['contacts'])->toHaveCount(1);
+});
+
+it('imports legacy multi vcard webhook messages as contact messages', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $vcards = implode("\n", [
+        'BEGIN:VCARD',
+        'VERSION:3.0',
+        'FN:Primer Contacto',
+        'TEL;TYPE=CELL:+54 9 11 1111-1111',
+        'END:VCARD',
+        'BEGIN:VCARD',
+        'VERSION:3.0',
+        'FN:Segundo Contacto',
+        'TEL;TYPE=CELL:+54 9 11 2222-2222',
+        'END:VCARD',
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'id' => 'webhook-multi-vcard-1',
+        'chatId' => '5491100000000@c.us',
+        'from' => '5491100000000@c.us',
+        'type' => 'multi_vcard',
+        'content' => $vcards,
+    ])->assertOk();
+
+    $message = Message::query()->firstOrFail();
+
+    expect($message->type)->toBe('contact')
+        ->and($message->body)->toBe('Primer Contacto')
+        ->and($message->media_metadata['contact']['name'])->toBe('Primer Contacto')
+        ->and($message->media_metadata['contacts'])->toHaveCount(2)
+        ->and($message->media_metadata['contacts'][1]['name'])->toBe('Segundo Contacto');
+});
+
 it('downloads and stores omitted webhook image media from OpenWA', function () {
     Storage::fake('whatsapp_media');
     config([

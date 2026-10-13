@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use Illuminate\Auth\Middleware\Authenticate;
@@ -111,6 +112,98 @@ it('stores an outbound media message and sends base64 to OpenWA', function () {
         && $request['caption'] === 'Mirá esta foto'
         && is_string($request['base64'])
         && $request['base64'] !== '');
+});
+
+it('stores an outbound contact message and sends it to OpenWA', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/sessions/session-1/messages/send-contact' => Http::response([
+            'messageId' => 'openwa-contact-1',
+        ]),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $contact = Contact::query()->create([
+        'external_id' => '5491199999999@c.us',
+        'name' => 'Contacto Demo',
+        'phone' => '+54 9 11 9999-9999',
+    ]);
+
+    $response = $this
+        ->post(route('whatsapp.conversations.contacts.store', $conversation), [
+            'contact_id' => $contact->id,
+            'idempotency_key' => 'send-contact-key-1',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+
+    $message = Message::query()->firstOrFail();
+
+    expect($message->direction)->toBe('outbound')
+        ->and($message->type)->toBe('contact')
+        ->and($message->body)->toBe('Contacto Demo')
+        ->and($message->status)->toBe('accepted')
+        ->and($message->external_id)->toBe('openwa-contact-1')
+        ->and($message->media_metadata['contact']['id'])->toBe($contact->id)
+        ->and($message->media_metadata['contact']['phone'])->toBe('5491199999999')
+        ->and($message->sent_at)->not->toBeNull();
+
+    $conversation->refresh();
+
+    expect($conversation->last_message_id)->toBe($message->id)
+        ->and($conversation->last_message_at)->not->toBeNull();
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'http://openwa.test/api/sessions/session-1/messages/send-contact'
+        && $request['chatId'] === '5491100000000@c.us'
+        && $request['contactName'] === 'Contacto Demo'
+        && $request['contactNumber'] === '5491199999999');
+});
+
+it('does not call OpenWA when sending a contact without phone', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+
+    Http::fake([
+        'openwa.test/api/*' => Http::response([], 500),
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $contact = Contact::query()->create([
+        'external_id' => '5491199999999@c.us',
+        'name' => 'Contacto Sin Teléfono',
+        'phone' => null,
+    ]);
+
+    $response = $this
+        ->post(route('whatsapp.conversations.contacts.store', $conversation), [
+            'contact_id' => $contact->id,
+            'idempotency_key' => 'send-contact-no-phone-key-1',
+        ]);
+
+    $response->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+    $response->assertSessionHas('error', 'El contacto seleccionado no tiene un teléfono válido para enviar.');
+
+    expect(Message::query()->count())->toBe(0);
+
+    Http::assertNothingSent();
 });
 
 it('rejects unsupported outbound media with a Spanish validation error', function () {

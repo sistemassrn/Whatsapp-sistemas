@@ -419,6 +419,7 @@ class WhatsappMessageImporter
 
         return match ($type) {
             'image', 'video', 'audio', 'ptt', 'voice', 'document', 'file' => $type === 'file' ? 'document' : ($type === 'ptt' || $type === 'voice' ? 'audio' : $type),
+            'contact', 'vcard', 'multi_vcard', 'multi-vcard' => 'contact',
             default => 'text',
         };
     }
@@ -453,6 +454,12 @@ class WhatsappMessageImporter
      */
     private function mediaAttributes(array $messagePayload, ?array $media, string $messageType): array
     {
+        if ($messageType === 'contact') {
+            return [
+                'media_metadata' => $this->contactMediaMetadata($messagePayload),
+            ];
+        }
+
         if ($messageType === 'text') {
             return [];
         }
@@ -600,11 +607,307 @@ class WhatsappMessageImporter
      */
     private function messageBody(array $messagePayload, string $messageType): ?string
     {
+        if ($messageType === 'contact') {
+            return $this->contactMessageBody($messagePayload);
+        }
+
         if ($messageType === 'text') {
             return $this->firstString($messagePayload, ['body', 'text', 'message', 'content', 'caption']);
         }
 
         return $this->firstString($messagePayload, ['caption', 'body', 'text', 'message']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @return array<string, mixed>
+     */
+    private function contactMediaMetadata(array $messagePayload): array
+    {
+        $contacts = $this->contactPayloads($messagePayload);
+        $metadata = [
+            'type' => 'contact',
+            'has_media_payload' => false,
+        ];
+
+        if ($contacts !== []) {
+            $metadata['contact'] = $contacts[0];
+            $metadata['contacts'] = $contacts;
+        }
+
+        return $metadata;
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function contactMessageBody(array $messagePayload): string
+    {
+        $contact = $this->contactPayloads($messagePayload)[0] ?? null;
+
+        if ($contact !== null) {
+            foreach (['name', 'phone'] as $key) {
+                $value = $contact[$key] ?? null;
+
+                if (is_string($value) && trim($value) !== '') {
+                    return $value;
+                }
+            }
+        }
+
+        $rawBody = $this->firstString($messagePayload, ['body', 'text', 'message', 'content', 'caption']);
+
+        if ($rawBody !== null && ! str_contains(strtoupper($rawBody), 'BEGIN:VCARD')) {
+            return $rawBody;
+        }
+
+        return 'Contacto';
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @return list<array{name: string|null, phone: string|null, organization: string|null}>
+     */
+    private function contactPayloads(array $messagePayload): array
+    {
+        $contacts = [];
+
+        foreach ($this->vcardStrings($messagePayload) as $vcard) {
+            foreach ($this->parseVCardContacts($vcard) as $contact) {
+                $contacts[] = $contact;
+            }
+        }
+
+        foreach ($this->structuredContactPayloads($messagePayload) as $contactPayload) {
+            $contact = $this->contactPayloadFromArray($contactPayload);
+
+            if ($contact !== null) {
+                $contacts[] = $contact;
+            }
+        }
+
+        return $this->deduplicateContacts($contacts);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @return list<string>
+     */
+    private function vcardStrings(array $messagePayload): array
+    {
+        $vcards = [];
+
+        foreach (['vcard', 'vCard', 'contact.vcard', 'contact.vCard', '_data.vcard', '_data.vCard'] as $key) {
+            $value = data_get($messagePayload, $key);
+
+            if (is_string($value) && trim($value) !== '') {
+                $vcards[] = $value;
+            }
+        }
+
+        foreach (['vcards', 'vCards', 'contacts', '_data.vcards', '_data.vCards'] as $key) {
+            $value = data_get($messagePayload, $key);
+
+            if (! is_array($value)) {
+                continue;
+            }
+
+            foreach ($value as $item) {
+                if (is_string($item) && trim($item) !== '') {
+                    $vcards[] = $item;
+                } elseif (is_array($item)) {
+                    $vcard = $this->firstString($item, ['vcard', 'vCard']);
+
+                    if ($vcard !== null) {
+                        $vcards[] = $vcard;
+                    }
+                }
+            }
+        }
+
+        $body = $this->firstString($messagePayload, ['body', 'text', 'message', 'content', 'caption']);
+
+        if ($body !== null && str_contains(strtoupper($body), 'BEGIN:VCARD')) {
+            $vcards[] = $body;
+        }
+
+        return array_values(array_unique($vcards));
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @return list<array<string, mixed>>
+     */
+    private function structuredContactPayloads(array $messagePayload): array
+    {
+        $contacts = [];
+
+        foreach (['contact', '_data.contact'] as $key) {
+            $value = data_get($messagePayload, $key);
+
+            if (is_array($value)) {
+                $contacts[] = $value;
+            }
+        }
+
+        foreach (['contacts', '_data.contacts'] as $key) {
+            $value = data_get($messagePayload, $key);
+
+            if (! is_array($value)) {
+                continue;
+            }
+
+            foreach ($value as $item) {
+                if (is_array($item)) {
+                    $contacts[] = $item;
+                }
+            }
+        }
+
+        return $contacts;
+    }
+
+    /**
+     * @return list<array{name: string|null, phone: string|null, organization: string|null}>
+     */
+    private function parseVCardContacts(string $vcard): array
+    {
+        if (preg_match_all('/BEGIN:VCARD(.*?)END:VCARD/is', $vcard, $matches) < 1) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(function (string $card): ?array {
+            $properties = $this->vcardProperties($card);
+            $name = $properties['FN'][0] ?? $this->nameFromVCardN($properties['N'][0] ?? null);
+            $phone = $this->cleanVCardPhone($properties['TEL'][0] ?? null);
+            $organization = $properties['ORG'][0] ?? null;
+
+            if ($name === null && $phone === null) {
+                return null;
+            }
+
+            return [
+                'name' => $name,
+                'phone' => $phone,
+                'organization' => $organization,
+            ];
+        }, $matches[1])));
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function vcardProperties(string $card): array
+    {
+        $lines = preg_split('/\r\n|\r|\n/', $card) ?: [];
+        $unfoldedLines = [];
+
+        foreach ($lines as $line) {
+            if (($line[0] ?? '') === ' ' || ($line[0] ?? '') === "\t") {
+                $lastIndex = count($unfoldedLines) - 1;
+
+                if ($lastIndex >= 0) {
+                    $unfoldedLines[$lastIndex] .= substr($line, 1);
+                }
+
+                continue;
+            }
+
+            $unfoldedLines[] = $line;
+        }
+
+        $properties = [];
+
+        foreach ($unfoldedLines as $line) {
+            if (! str_contains($line, ':')) {
+                continue;
+            }
+
+            [$key, $value] = explode(':', $line, 2);
+            $name = strtoupper(strtok($key, ';') ?: $key);
+            $value = $this->decodeVCardValue($value);
+
+            if ($value !== '') {
+                $properties[$name][] = $value;
+            }
+        }
+
+        return $properties;
+    }
+
+    private function decodeVCardValue(string $value): string
+    {
+        return trim(str_replace(['\\n', '\\N', '\\,', '\\;', '\\\\'], ["\n", "\n", ',', ';', '\\'], $value));
+    }
+
+    private function nameFromVCardN(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $parts = array_values(array_filter(array_map('trim', explode(';', $value)), fn (string $part): bool => $part !== ''));
+
+        if ($parts === []) {
+            return null;
+        }
+
+        return implode(' ', array_slice($parts, 0, 2));
+    }
+
+    private function cleanVCardPhone(?string $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        $phone = preg_replace('/[^0-9+]+/', '', $value);
+
+        return is_string($phone) && $phone !== '' ? $phone : null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{name: string|null, phone: string|null, organization: string|null}|null
+     */
+    private function contactPayloadFromArray(array $payload): ?array
+    {
+        $name = $this->firstString($payload, ['name', 'displayName', 'formattedName', 'pushName']);
+        $phone = $this->cleanVCardPhone($this->firstString($payload, ['phone', 'number', 'contactNumber', 'id', '_serialized']));
+        $organization = $this->firstString($payload, ['organization', 'org', 'company']);
+
+        if ($name === null && $phone === null) {
+            return null;
+        }
+
+        return [
+            'name' => $name,
+            'phone' => $phone,
+            'organization' => $organization,
+        ];
+    }
+
+    /**
+     * @param  list<array{name: string|null, phone: string|null, organization: string|null}>  $contacts
+     * @return list<array{name: string|null, phone: string|null, organization: string|null}>
+     */
+    private function deduplicateContacts(array $contacts): array
+    {
+        $deduplicated = [];
+        $seen = [];
+
+        foreach ($contacts as $contact) {
+            $key = strtolower(($contact['name'] ?? '').'|'.($contact['phone'] ?? ''));
+
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $deduplicated[] = $contact;
+        }
+
+        return $deduplicated;
     }
 
     private function defaultMimeForType(string $messageType): string

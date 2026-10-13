@@ -43,6 +43,14 @@ Route::post('/whatsapp/conversations/{conversation}/hide', [WhatsappConversation
     ->middleware('auth')
     ->name('whatsapp.conversations.hide');
 
+Route::get('/whatsapp/contacts', [WhatsappConversationsController::class, 'contacts'])
+    ->middleware('auth')
+    ->name('whatsapp.contacts.index');
+
+Route::post('/whatsapp/contacts/{contact}/open-conversation', [WhatsappConversationsController::class, 'openContact'])
+    ->middleware('auth')
+    ->name('whatsapp.contacts.open-conversation');
+
 Route::post('/whatsapp/contacts/{contact}/avatar', WhatsappContactAvatarController::class)
     ->middleware('auth')
     ->name('whatsapp.contacts.avatar');
@@ -50,6 +58,10 @@ Route::post('/whatsapp/contacts/{contact}/avatar', WhatsappContactAvatarControll
 Route::post('/whatsapp/conversations/{conversation}/messages', [ConversationMessageController::class, 'store'])
     ->middleware('auth')
     ->name('whatsapp.conversations.messages.store');
+
+Route::post('/whatsapp/conversations/{conversation}/contacts', [ConversationMessageController::class, 'storeContact'])
+    ->middleware('auth')
+    ->name('whatsapp.conversations.contacts.store');
 
 Route::get('/whatsapp/messages/{message}/media', [MessageMediaController::class, 'show'])
     ->middleware('auth')

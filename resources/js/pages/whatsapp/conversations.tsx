@@ -1,5 +1,5 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, MailOpen, MoreVertical, Paperclip, Pause, Pencil, Play, Search, Send, Settings, Trash2, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Files, MailOpen, MoreVertical, Paperclip, Pause, Pencil, Play, Search, Send, Settings, Trash2, UserRound, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ThemeToggle } from '../../theme';
@@ -54,7 +54,7 @@ type MessageItem = {
     external_id: string | null;
     direction: string;
     body: string | null;
-    type: 'text' | 'image' | 'video' | 'audio' | 'document' | string;
+    type: 'text' | 'image' | 'video' | 'audio' | 'document' | 'contact' | string;
     status: string;
     error_message: string | null;
     edited_at: string | null;
@@ -83,6 +83,18 @@ type ImagePreview = {
     filename: string;
 };
 
+type AgendaContact = {
+    id: number;
+    external_id: string;
+    display_name: string;
+    secondary_label: string | null;
+    phone: string | null;
+    usable_phone: boolean;
+    profile_photo_url: string | null;
+    avatar_url: string | null;
+    initials: string;
+};
+
 type MessageRenderItem =
     | { type: 'divider'; key: string; text: string }
     | { type: 'date-divider'; key: string; text: string }
@@ -93,7 +105,7 @@ type UploadProgress = {
     percentage?: number | null;
 };
 
-type MessageSubmitErrors = Partial<Record<'body' | 'media' | 'idempotency_key', string>> & Record<string, string>;
+type MessageSubmitErrors = Partial<Record<'body' | 'media' | 'idempotency_key' | 'contact_id', string>> & Record<string, string>;
 
 type ConnectionState = {
     status: string;
@@ -148,6 +160,7 @@ type Props = {
 };
 
 const INBOX_RELOAD_PROPS = ['conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId', 'maintenance'];
+const CONTACTS_LOAD_ERROR = 'No se pudo cargar la agenda.';
 const requestedAvatarContactIds = new Set<number>();
 
 function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null>, active: boolean, onClose: () => void) {
@@ -189,6 +202,7 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const logoutForm = useForm({});
     const syncMaintenanceForm = useForm({});
     const [maintenanceModalOpen, setMaintenanceModalOpen] = useState(false);
+    const [agendaOpen, setAgendaOpen] = useState(false);
     const maintenanceIsRunning = maintenance.status === 'running';
     const maintenanceIsBusy = maintenance.status === 'running' || maintenance.status === 'queued';
 
@@ -456,6 +470,14 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                     <ThemeToggle />
                                     <button
                                         type="button"
+                                        onClick={() => setAgendaOpen(true)}
+                                        className="app-button grid size-9 place-items-center rounded-lg border transition"
+                                        aria-label="Abrir agenda"
+                                    >
+                                        <UserRound className="size-4" />
+                                    </button>
+                                    <button
+                                        type="button"
                                         onClick={() => setMaintenanceModalOpen(true)}
                                         className="app-button grid size-9 place-items-center rounded-lg border transition"
                                         aria-label="Abrir mantenimiento"
@@ -535,9 +557,220 @@ export default function Conversations({ operator, conversations, selectedChatId,
                             onLogout={logout}
                         />
                     ) : null}
+
+                    {agendaOpen ? (
+                        <AgendaModal onClose={() => setAgendaOpen(false)} />
+                    ) : null}
                 </section>
             </main>
         </>
+    );
+}
+
+function AgendaModal({ onClose }: { onClose: () => void }) {
+    const modalRef = useRef<HTMLDivElement>(null);
+    const [search, setSearch] = useState('');
+    const [openingContactId, setOpeningContactId] = useState<number | null>(null);
+    const { contacts, loading, error } = useContactsSearch(search);
+
+    useCloseOnOutsidePointer(modalRef, true, onClose);
+    useEscapeClose(onClose);
+
+    const openContact = (contact: AgendaContact) => {
+        if (openingContactId !== null) {
+            return;
+        }
+
+        setOpeningContactId(contact.id);
+
+        router.post(`/whatsapp/contacts/${contact.id}/open-conversation`, {}, {
+            preserveScroll: true,
+            onSuccess: onClose,
+            onFinish: () => setOpeningContactId(null),
+        });
+    };
+
+    return (
+        <ContactModalFrame modalRef={modalRef} title="Agenda" titleId="agenda-title" closeLabel="Cerrar agenda" onClose={onClose}>
+            <ContactSearchInput search={search} onSearchChange={setSearch} />
+            <ContactList
+                contacts={contacts}
+                loading={loading}
+                error={error}
+                actionLabel={(contact) => openingContactId === contact.id ? 'Abriendo…' : null}
+                disabled={() => openingContactId !== null}
+                disabledClassName="disabled:cursor-wait disabled:opacity-70"
+                onSelect={openContact}
+            />
+        </ContactModalFrame>
+    );
+}
+
+function ContactSelectorModal({ sendingContactId, onClose, onSelect }: { sendingContactId: number | null; onClose: () => void; onSelect: (contact: AgendaContact) => void }) {
+    const modalRef = useRef<HTMLDivElement>(null);
+    const [search, setSearch] = useState('');
+    const { contacts, loading, error } = useContactsSearch(search);
+
+    useCloseOnOutsidePointer(modalRef, true, onClose);
+    useEscapeClose(onClose);
+
+    return (
+        <ContactModalFrame modalRef={modalRef} title="Enviar contacto" titleId="contact-selector-title" description="Elegí un único contacto para compartir en este chat." closeLabel="Cerrar selector de contactos" onClose={onClose}>
+            <ContactSearchInput search={search} onSearchChange={setSearch} />
+            <ContactList
+                contacts={contacts}
+                loading={loading}
+                error={error}
+                actionLabel={(contact) => sendingContactId === contact.id ? 'Enviando…' : null}
+                disabled={(contact) => sendingContactId !== null || !contact.usable_phone}
+                disabledClassName="disabled:cursor-not-allowed disabled:opacity-60"
+                footer={(contact) => !contact.usable_phone ? <span className="mt-0.5 block truncate text-xs text-(--app-danger)">Sin teléfono</span> : null}
+                onSelect={onSelect}
+            />
+        </ContactModalFrame>
+    );
+}
+
+function useContactsSearch(search: string): { contacts: AgendaContact[]; loading: boolean; error: string | null } {
+    const [contacts, setContacts] = useState<AgendaContact[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        const abortController = new AbortController();
+        const timeout = window.setTimeout(() => {
+            setLoading(true);
+            setError(null);
+
+            const query = new URLSearchParams();
+            const normalizedSearch = search.trim();
+
+            if (normalizedSearch !== '') {
+                query.set('search', normalizedSearch);
+            }
+
+            void fetch(`/whatsapp/contacts${query.toString() ? `?${query.toString()}` : ''}`, {
+                headers: { Accept: 'application/json' },
+                signal: abortController.signal,
+            })
+                .then((response) => {
+                    if (!response.ok) {
+                        throw new Error(CONTACTS_LOAD_ERROR);
+                    }
+
+                    return response.json() as Promise<{ contacts?: AgendaContact[] }>;
+                })
+                .then((payload) => setContacts(Array.isArray(payload.contacts) ? payload.contacts : []))
+                .catch((fetchError: unknown) => {
+                    if (fetchError instanceof DOMException && fetchError.name === 'AbortError') {
+                        return;
+                    }
+
+                    setContacts([]);
+                    setError(CONTACTS_LOAD_ERROR);
+                })
+                .finally(() => {
+                    if (!abortController.signal.aborted) {
+                        setLoading(false);
+                    }
+                });
+        }, 250);
+
+        return () => {
+            window.clearTimeout(timeout);
+            abortController.abort();
+        };
+    }, [search]);
+
+    return { contacts, loading, error };
+}
+
+function useEscapeClose(onClose: () => void) {
+    useEffect(() => {
+        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== 'Escape') {
+                return;
+            }
+
+            event.preventDefault();
+            onClose();
+        };
+
+        document.addEventListener('keydown', closeOnEscape);
+
+        return () => document.removeEventListener('keydown', closeOnEscape);
+    }, [onClose]);
+}
+
+function ContactModalFrame({ modalRef, title, titleId, description, closeLabel, onClose, children }: { modalRef: RefObject<HTMLDivElement | null>; title: string; titleId: string; description?: string; closeLabel: string; onClose: () => void; children: ReactNode }) {
+    return (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4" role="presentation">
+            <section ref={modalRef} className="app-surface flex max-h-[85vh] w-full max-w-lg flex-col rounded-3xl border p-5 shadow-2xl shadow-black/30" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+                <header className="flex items-start justify-between gap-4">
+                    <div>
+                        <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
+                        {description ? <p className="app-muted mt-1 text-sm">{description}</p> : null}
+                    </div>
+                    <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label={closeLabel}>
+                        <X className="size-4" />
+                    </button>
+                </header>
+                {children}
+            </section>
+        </div>
+    );
+}
+
+function ContactSearchInput({ search, onSearchChange }: { search: string; onSearchChange: (value: string) => void }) {
+    return (
+        <SearchForm
+            placeholder="Buscar por nombre o teléfono"
+            value={search}
+            onChange={onSearchChange}
+            onSubmit={() => undefined}
+            onClear={() => onSearchChange('')}
+            className="mt-4"
+        />
+    );
+}
+
+function ContactList({ contacts, loading, error, actionLabel, disabled, disabledClassName, footer, onSelect }: { contacts: AgendaContact[]; loading: boolean; error: string | null; actionLabel: (contact: AgendaContact) => string | null; disabled: (contact: AgendaContact) => boolean; disabledClassName: string; footer?: (contact: AgendaContact) => ReactNode; onSelect: (contact: AgendaContact) => void }) {
+    return (
+        <div className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-(--app-border)" aria-busy={loading}>
+            {error ? <p className="app-alert-danger m-3 rounded-xl border p-3 text-sm">{error}</p> : null}
+            {loading && contacts.length === 0 ? <p className="app-muted p-4 text-sm">Cargando contactos…</p> : null}
+            {loading && contacts.length > 0 ? <p className="app-faint px-4 py-2 text-xs">Actualizando agenda…</p> : null}
+            {!loading && contacts.length === 0 && !error ? <p className="app-muted p-4 text-sm">No encontramos contactos.</p> : null}
+            {contacts.map((contact) => (
+                <button
+                    key={contact.id}
+                    type="button"
+                    onClick={() => onSelect(contact)}
+                    disabled={disabled(contact)}
+                    className={`flex w-full items-center gap-3 border-b border-(--app-border) px-4 py-3 text-left transition last:border-b-0 hover:bg-(--app-surface-strong) ${disabledClassName}`}
+                >
+                    <ContactAvatar contact={contact} />
+                    <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold">{contact.display_name}</span>
+                        {contact.secondary_label ? <span className="app-muted mt-0.5 block truncate text-xs">{contact.secondary_label}</span> : null}
+                        {footer?.(contact)}
+                    </span>
+                    {actionLabel(contact) ? <span className="app-faint text-xs">{actionLabel(contact)}</span> : null}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+function ContactAvatar({ contact }: { contact: AgendaContact }) {
+    if (contact.avatar_url) {
+        return <img src={contact.avatar_url} alt={`Foto de perfil de ${contact.display_name}`} className="size-10 rounded-full border border-(--app-border) object-cover" loading="lazy" />;
+    }
+
+    return (
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) text-sm font-semibold">
+            {contact.initials || initials(contact.display_name)}
+        </span>
     );
 }
 
@@ -616,7 +849,7 @@ function MaintenanceModal({
                 <div className="mt-5 grid gap-2 sm:grid-cols-3">
                     <form onSubmit={onSync}>
                         <button type="submit" disabled={syncing || isBusy} className="app-button-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
-                            {maintenance.status === 'queued' ? 'Esperando...' : isRunning ? 'Sincronizando...' : 'Solicitar sync'}
+                            {maintenance.status === 'queued' ? 'Esperando...' : isRunning ? 'Sincronizando...' : 'Sincronizar'}
                         </button>
                     </form>
                     <form onSubmit={onDisconnect}>
@@ -852,7 +1085,11 @@ function MessagePanel({
     const messageRefs = useRef<Record<number, HTMLElement | null>>({});
     const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+    const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+    const [contactSelectorOpen, setContactSelectorOpen] = useState(false);
+    const [sendingContactId, setSendingContactId] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const attachmentMenuRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const composerBodyRef = useRef('');
     const composerMediaRef = useRef<File[]>([]);
@@ -867,6 +1104,8 @@ function MessagePanel({
         idempotency_key: generateIdempotencyKey(),
     });
 
+    useCloseOnOutsidePointer(attachmentMenuRef, attachmentMenuOpen, () => setAttachmentMenuOpen(false));
+
     useEffect(() => {
         composerBodyRef.current = data.body;
         composerMediaRef.current = data.media;
@@ -875,6 +1114,8 @@ function MessagePanel({
     useEffect(() => {
         setMessageSearch('');
         setActiveMatchIndex(0);
+        setAttachmentMenuOpen(false);
+        setContactSelectorOpen(false);
     }, [conversation.external_id]);
 
     const normalizedMessageSearch = messageSearch.trim().toLocaleLowerCase();
@@ -1086,6 +1327,36 @@ function MessagePanel({
         });
     };
 
+    const sendContact = (contact: AgendaContact) => {
+        if (sendingContactId !== null) {
+            return;
+        }
+
+        if (!contact.usable_phone) {
+            toast.error('Este contacto no tiene teléfono para enviar.');
+            return;
+        }
+
+        clearErrors();
+        setSendingContactId(contact.id);
+
+        router.post(`/whatsapp/conversations/${conversation.id}/contacts`, {
+            contact_id: contact.id,
+            idempotency_key: generateIdempotencyKey(),
+        }, {
+            async: true,
+            preserveScroll: true,
+            onSuccess: () => {
+                setContactSelectorOpen(false);
+            },
+            onError: (submitErrors: MessageSubmitErrors) => {
+                setError(submitErrors);
+                toast.error(submitErrors.contact_id ?? submitErrors.idempotency_key ?? 'No se pudo enviar el contacto.');
+            },
+            onFinish: () => setSendingContactId(null),
+        });
+    };
+
     const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
         if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
             return;
@@ -1245,7 +1516,7 @@ function MessagePanel({
                 style={CHAT_BACKGROUND_STYLE}
             >
                 {messages.length === 0 ? (
-                    <p className="app-surface-soft rounded-xl border p-4 text-sm">
+                    <p className="flex text-xs items-center justify-center app-message-text">
                         No hay mensajes para este chat.
                     </p>
                 ) : (
@@ -1335,14 +1606,46 @@ function MessagePanel({
                         </div>
                     ) : null}
                     <div className="flex items-end gap-2">
-                        <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="app-button-primary grid size-10 shrink-0 place-items-center rounded-full transition"
-                            aria-label="Adjuntar archivo"
-                        >
-                            <Paperclip className="size-4" />
-                        </button>
+                        <div ref={attachmentMenuRef} className="relative shrink-0">
+                            <button
+                                type="button"
+                                onClick={() => setAttachmentMenuOpen((current) => !current)}
+                                className="app-button-primary grid size-10 place-items-center rounded-full transition"
+                                aria-label="Adjuntar"
+                                aria-expanded={attachmentMenuOpen}
+                                aria-haspopup="menu"
+                            >
+                                <Paperclip className="size-4" />
+                            </button>
+                            {attachmentMenuOpen ? (
+                                <div className="app-menu absolute bottom-[calc(100%+0.5rem)] left-0 z-20 w-44 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setAttachmentMenuOpen(false);
+                                            fileInputRef.current?.click();
+                                        }}
+                                        className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left"
+                                        role="menuitem"
+                                    >
+                                        <Files className="size-4 text-(--app-accent)" />
+                                        <span>Archivos</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setAttachmentMenuOpen(false);
+                                            setContactSelectorOpen(true);
+                                        }}
+                                        className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left"
+                                        role="menuitem"
+                                    >
+                                        <UserRound className="size-4 text-(--app-accent)" />
+                                        <span>Contactos</span>
+                                    </button>
+                                </div>
+                            ) : null}
+                        </div>
                         <label className="sr-only" htmlFor="message-body">
                             Mensaje
                         </label>
@@ -1375,9 +1678,17 @@ function MessagePanel({
                     {sendProgress !== null ? <p className="app-muted ml-14 text-xs">Subiendo archivos… {sendProgress}%</p> : null}
                     {errors.body ? <p className="mt-2 text-sm text-(--app-danger)">{errors.body}</p> : null}
                     {errors.media ? <p className="mt-2 text-sm text-(--app-danger)">{errors.media}</p> : null}
+                    {errors.contact_id ? <p className="mt-2 text-sm text-(--app-danger)">{errors.contact_id}</p> : null}
                     {errors.idempotency_key ? <p className="mt-2 text-sm text-(--app-danger)">{errors.idempotency_key}</p> : null}
                 </form>
             </footer>
+            {contactSelectorOpen ? (
+                <ContactSelectorModal
+                    sendingContactId={sendingContactId}
+                    onClose={() => setContactSelectorOpen(false)}
+                    onSelect={sendContact}
+                />
+            ) : null}
             {imagePreview ? (
                 <ImageViewerModal
                     image={imagePreview}
@@ -1688,7 +1999,7 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                 ) : (
                     <>
                         <MessageMedia message={message} onAudioTimeLabelChange={setAudioTimeLabel} onOpenImage={onOpenImage} />
-                        {message.body ? (
+                        {message.body && message.type !== 'contact' ? (
                             <MessageBody
                                 text={message.body}
                                 searchQuery={searchQuery}
@@ -1874,6 +2185,10 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
         return null;
     }
 
+    if (message.type === 'contact') {
+        return <ContactMessageCard message={message} />;
+    }
+
     if (!message.media_url) {
         const status = message.media_download_status ? translateMediaStatus(message.media_download_status) : 'pendiente';
         const mediaError = message.media_error ?? unavailableMediaLabel(message.type);
@@ -1921,6 +2236,29 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
             <span className="truncate">{message.media_filename ?? 'Documento adjunto'}</span>
             {message.media_size_bytes ? <span className="app-muted shrink-0 text-xs">{formatBytes(message.media_size_bytes)}</span> : null}
         </a>
+    );
+}
+
+function ContactMessageCard({ message }: { message: MessageItem }) {
+    const contact = contactMessageMetadata(message);
+    const name = contact.name ?? message.body ?? 'Contacto';
+
+    return (
+        <div className="app-surface-soft mb-2 flex min-w-60 items-center gap-3 rounded-lg border px-3 py-2 text-sm">
+            {contact.avatarUrl ? (
+                <img src={contact.avatarUrl} alt={`Foto de perfil de ${name}`} className="size-10 shrink-0 rounded-full border border-(--app-border) object-cover" loading="lazy" />
+            ) : (
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) font-semibold">
+                    {initials(name)}
+                </span>
+            )}
+            <span className="min-w-0 flex-1">
+                <span className="block truncate font-semibold">{name}</span>
+                {contact.phone ? <span className="app-muted mt-0.5 block truncate text-xs">{contact.phone}</span> : null}
+                {/* {contact.organization ? <span className="app-muted mt-0.5 block truncate text-xs">{contact.organization}</span> : null} */}
+                {/* {contact.count > 1 ? <span className="app-faint mt-1 block text-xs">+{contact.count - 1} contacto{contact.count - 1 === 1 ? '' : 's'} más</span> : null} */}
+            </span>
+        </div>
     );
 }
 
@@ -2188,11 +2526,11 @@ function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNex
 function EmptyConversation() {
     return (
         <div className="grid h-full place-items-center p-8 text-center" style={CHAT_BACKGROUND_STYLE}>
-            <div className="app-surface-soft max-w-md rounded-2xl border p-8">
+            {/* <div className="app-surface-soft max-w-md rounded-2xl border p-8">
                 <p className="text-sm leading-6">
                     Elegí un chat para ver los mensajes.
                 </p>
-            </div>
+            </div> */}
         </div>
     );
 }
@@ -2487,6 +2825,42 @@ function audioMetadataDuration(metadata: Record<string, unknown> | null): number
     }
 
     return 0;
+}
+
+type ContactMessageMetadata = {
+    name: string | null;
+    phone: string | null;
+    organization: string | null;
+    avatarUrl: string | null;
+    count: number;
+};
+
+function contactMessageMetadata(message: MessageItem): ContactMessageMetadata {
+    const contacts = message.media_metadata?.contacts;
+    const contact = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : message.media_metadata?.contact;
+    const count = Array.isArray(contacts) ? contacts.length : 1;
+
+    if (!contact || typeof contact !== 'object') {
+        return { name: message.body, phone: null, organization: null, avatarUrl: null, count: 1 };
+    }
+
+    const metadata = contact as Record<string, unknown>;
+    const name = typeof metadata.name === 'string' && metadata.name.trim() !== '' ? metadata.name : message.body;
+    const phone = typeof metadata.phone === 'string' && metadata.phone.trim() !== '' ? metadata.phone : null;
+    const organization = typeof metadata.organization === 'string' && metadata.organization.trim() !== '' ? metadata.organization : null;
+    const avatarUrl = firstString(metadata.avatar_url, metadata.avatarUrl, metadata.profile_photo_url, metadata.profilePhotoUrl, metadata.photo_url, metadata.photoUrl);
+
+    return { name, phone, organization, avatarUrl, count };
+}
+
+function firstString(...values: unknown[]): string | null {
+    for (const value of values) {
+        if (typeof value === 'string' && value.trim() !== '') {
+            return value;
+        }
+    }
+
+    return null;
 }
 
 function formatAudioTime(value: number): string {

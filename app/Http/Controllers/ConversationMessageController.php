@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Requests\StoreConversationMessageRequest;
+use App\Models\Contact;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\OpenWaClient;
@@ -10,6 +11,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
@@ -158,6 +160,137 @@ class ConversationMessageController extends Controller
         }
     }
 
+    public function storeContact(Request $request, Conversation $conversation, OpenWaClient $client): RedirectResponse
+    {
+        /** @var array{contact_id: int, idempotency_key: string} $validated */
+        $validated = $request->validate([
+            'contact_id' => ['required', 'integer', 'exists:contacts,id'],
+            'idempotency_key' => ['required', 'string', 'max:100'],
+        ], [
+            'contact_id.required' => 'Elegí un contacto para enviar.',
+            'contact_id.exists' => 'El contacto seleccionado ya no está disponible.',
+            'idempotency_key.required' => 'No se pudo preparar el envío. Actualizá la página e intentá de nuevo.',
+            'idempotency_key.string' => 'La clave de envío no es válida. Actualizá la página e intentá de nuevo.',
+            'idempotency_key.max' => 'La clave de envío es demasiado larga. Actualizá la página e intentá de nuevo.',
+        ]);
+
+        $contact = Contact::query()->findOrFail($validated['contact_id']);
+        $contactName = $this->contactDisplayName($contact);
+        $contactNumber = $this->contactPhoneNumber($contact);
+
+        if ($contactNumber === null) {
+            return $this->redirectToConversation($conversation)
+                ->with('error', 'El contacto seleccionado no tiene un teléfono válido para enviar.');
+        }
+
+        $existingMessage = Message::query()
+            ->where('idempotency_key', $validated['idempotency_key'])
+            ->first();
+
+        if ($existingMessage !== null) {
+            return $this->redirectToConversation($conversation)
+                ->with('success', 'El mensaje ya había sido registrado.');
+        }
+
+        $now = now();
+
+        try {
+            $message = Message::query()->create([
+                'conversation_id' => $conversation->id,
+                'direction' => 'outbound',
+                'body' => $contactName,
+                'type' => 'contact',
+                'status' => 'pending',
+                'idempotency_key' => $validated['idempotency_key'],
+                'sent_at' => $now,
+                'media_metadata' => [
+                    'contact' => [
+                        'id' => $contact->id,
+                        'external_id' => $contact->external_id,
+                        'name' => $contactName,
+                        'phone' => $contactNumber,
+                        'profile_photo_url' => $contact->profile_photo_url,
+                    ],
+                ],
+            ]);
+        } catch (QueryException $exception) {
+            $duplicateMessage = Message::query()
+                ->where('idempotency_key', $validated['idempotency_key'])
+                ->first();
+
+            if ($duplicateMessage !== null) {
+                return $this->redirectToConversation($conversation)
+                    ->with('success', 'El mensaje ya había sido registrado.');
+            }
+
+            throw $exception;
+        }
+
+        $conversation->update([
+            'last_message_id' => $message->id,
+            'last_message_at' => $now,
+            'hidden_at' => null,
+            'hidden_reason' => null,
+        ]);
+
+        try {
+            $session = $client->findSessionByName((string) config('openwa.session_name'));
+
+            if ($session === null) {
+                $this->markMessageAsFailed($message, 'Conectá WhatsApp para enviar mensajes.');
+
+                return $this->redirectToConversation($conversation)
+                    ->with('error', 'Conectá WhatsApp para enviar mensajes.');
+            }
+
+            $sessionId = $this->sessionId($session);
+
+            if ($sessionId === null) {
+                $this->markMessageAsFailed($message, 'No pudimos enviar el mensaje. Reintentá en unos segundos.');
+
+                return $this->redirectToConversation($conversation)
+                    ->with('error', 'No pudimos enviar el mensaje. Reintentá en unos segundos.');
+            }
+
+            if (! $this->isReady($session)) {
+                $this->markMessageAsFailed($message, 'Conectá WhatsApp para enviar mensajes.');
+
+                return $this->redirectToConversation($conversation)
+                    ->with('error', 'Conectá WhatsApp para enviar mensajes.');
+            }
+
+            $response = $client->sendContactMessage($sessionId, $conversation->external_id, $contactName, $contactNumber);
+            $message->status = 'accepted';
+
+            $externalId = $this->messageExternalId($response);
+
+            if ($message->external_id === null && $externalId !== null) {
+                $message->external_id = $externalId;
+            }
+
+            $message->error_message = null;
+            $message->save();
+
+            return $this->redirectToConversation($conversation)
+                ->with('success', 'Contacto enviado.');
+        } catch (ConnectionException|RequestException $exception) {
+            if ($this->isDefinitiveSendFailure($exception)) {
+                $error = $this->readableSendError($exception);
+                $this->markMessageAsFailed($message, $error);
+
+                return $this->redirectToConversation($conversation)
+                    ->with('error', $error);
+            }
+
+            $message->update([
+                'status' => 'verifying',
+                'error_message' => null,
+            ]);
+
+            return $this->redirectToConversation($conversation);
+        }
+    }
+
     private function redirectToConversation(Conversation $conversation): RedirectResponse
     {
         return redirect()->route('whatsapp.conversations', [
@@ -297,6 +430,51 @@ class ConversationMessageController extends Controller
         $safeBasename = Str::of($basename)->ascii()->replaceMatches('/[^A-Za-z0-9._-]+/', '-')->trim('-._')->limit(80, '')->toString();
 
         return ($safeBasename !== '' ? $safeBasename : 'media').'.'.$extension;
+    }
+
+    private function contactDisplayName(Contact $contact): string
+    {
+        foreach ([$contact->name, $contact->push_name, $contact->phone, $contact->external_id] as $candidate) {
+            $displayName = $this->cleanContactIdentifier($candidate);
+
+            if ($displayName !== null) {
+                return $displayName;
+            }
+        }
+
+        return 'Contacto';
+    }
+
+    private function contactPhoneNumber(Contact $contact): ?string
+    {
+        $phone = preg_replace('/\D+/', '', (string) $contact->phone);
+
+        if (! is_string($phone) || $phone === '' || strlen($phone) < 6 || strlen($phone) > 15) {
+            return null;
+        }
+
+        return $phone;
+    }
+
+    private function cleanContactIdentifier(?string $value): ?string
+    {
+        $value = trim((string) $value);
+
+        if ($value === '' || strtolower($value) === 'mi num' || Str::endsWith($value, '@lid')) {
+            return null;
+        }
+
+        if (Str::endsWith($value, '@c.us')) {
+            $phone = Str::before($value, '@');
+
+            return preg_match('/^\d{6,15}$/', $phone) === 1 ? $phone : null;
+        }
+
+        if (str_contains($value, '@')) {
+            return null;
+        }
+
+        return preg_match('/^[a-f0-9]{24,}$/i', $value) === 1 ? null : $value;
     }
 
     private function extensionForMime(string $mimeType, ?string $fallback = null): string
