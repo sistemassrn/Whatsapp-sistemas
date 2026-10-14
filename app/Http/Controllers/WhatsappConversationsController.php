@@ -17,6 +17,8 @@ use Inertia\Response;
 
 class WhatsappConversationsController extends Controller
 {
+    private const SQL_SERVER_DATETIME_FORMAT = 'Y-m-d H:i:s.v';
+
     public function __invoke(Request $request, WhatsappConnectionStatus $connectionStatus): Response|RedirectResponse
     {
         $connection = null;
@@ -344,7 +346,11 @@ class WhatsappConversationsController extends Controller
         return Message::query()
             ->where('conversation_id', $conversation->id)
             ->when($conversation->last_read_at !== null, function (Builder $query) use ($conversation): void {
-                $query->whereRaw('COALESCE(sent_at, received_at, created_at) > ?', [$conversation->last_read_at->format('Ymd H:i:s.v')]);
+                $activityCutoffExpression = $query->getConnection()->getDriverName() === 'sqlsrv'
+                    ? 'COALESCE(sent_at, received_at, created_at) > CONVERT(datetime2, ?, 121)'
+                    : 'COALESCE(sent_at, received_at, created_at) > ?';
+
+                $query->whereRaw($activityCutoffExpression, [$conversation->last_read_at->format(self::SQL_SERVER_DATETIME_FORMAT)]);
             })
             ->orderByRaw('COALESCE(sent_at, received_at, created_at) asc')
             ->orderBy('id')

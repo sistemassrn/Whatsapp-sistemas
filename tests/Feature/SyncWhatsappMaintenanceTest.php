@@ -39,7 +39,7 @@ it('runs recent sync before retrying media', function () {
     $this->artisan('whatsapp:sync-maintenance')
         ->expectsOutput('Iniciando mantenimiento de sincronización de WhatsApp.')
         ->expectsOutput('Chats escaneados: 0')
-        ->expectsOutput('Sincronización reciente completada. Reintentando medios pendientes.')
+        ->expectsOutput('Sincronización reciente completada. La multimedia omitida se recupera con retry-media.')
         ->expectsOutput('Intentados: 0')
         ->expectsOutput('Mantenimiento de sincronización de WhatsApp completado.')
         ->assertSuccessful();

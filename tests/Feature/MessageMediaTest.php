@@ -7,6 +7,7 @@ use App\Services\WhatsappMessageMediaDownloader;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
@@ -431,6 +432,71 @@ it('downloads omitted media with the retry command', function () {
 
     Storage::disk('whatsapp_media')->assertExists($message->media_path);
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('retry-audio-bytes');
+});
+
+it('binds the retry media raw cutoff with a SQL Server safe datetime format', function () {
+    Storage::fake('whatsapp_media');
+    Carbon::setTestNow(Carbon::parse('2026-10-14 07:00:13.875'));
+    config([
+        'openwa.session_name' => 'whatsapp-sistemas',
+        'openwa.retry_media_window_hours' => 240,
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+
+    Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'wamid-retry-binding-format',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'sent_at' => now()->subHour(),
+        'media_download_status' => 'omitted',
+    ]);
+
+    app()->instance(OpenWaClient::class, new class extends OpenWaClient
+    {
+        public function findSessionByName(string $name): ?array
+        {
+            return [
+                'id' => 'session-1',
+                'name' => $name,
+                'status' => 'ready',
+            ];
+        }
+    });
+    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
+    {
+        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
+        {
+            return false;
+        }
+    });
+
+    $rawCutoffBindings = [];
+    DB::listen(function ($query) use (&$rawCutoffBindings): void {
+        if (str_contains($query->sql, 'COALESCE(sent_at, received_at, created_at)')) {
+            $rawCutoffBindings[] = $query->bindings;
+        }
+    });
+
+    expect(Artisan::call('whatsapp:retry-media', [
+        '--limit' => 1,
+        '--minutes' => 1440,
+    ]))->toBe(0);
+
+    $rawCutoffBinding = collect($rawCutoffBindings)
+        ->flatten()
+        ->first(fn ($binding): bool => is_string($binding) && str_contains($binding, '2026-10-04'));
+
+    expect($rawCutoffBinding)->toBe('2026-10-04 07:00:13.875')
+        ->and($rawCutoffBinding)->not->toMatch('/^\d{8} /');
+
+    Carbon::setTestNow();
 });
 
 it('retries stored media with the retry command when the local file is missing', function () {
@@ -860,6 +926,7 @@ it('excludes permanent media type errors from the retry command', function () {
 
 it('does not retry omitted media outside the retry media window', function () {
     Storage::fake('whatsapp_media');
+    $outsideRetryWindow = Carbon::parse('2025-01-01 12:00:00');
     config([
         'openwa.api_key' => 'testing-key',
         'openwa.base_url' => 'http://openwa.test/api',
@@ -880,15 +947,16 @@ it('does not retry omitted media outside the retry media window', function () {
         'body' => null,
         'type' => 'audio',
         'status' => 'received',
-        'received_at' => now()->subHours(241),
+        'sent_at' => $outsideRetryWindow,
+        'received_at' => $outsideRetryWindow,
         'media_mime_type' => 'audio/ogg',
         'media_filename' => 'old.ogg',
         'media_download_status' => 'omitted',
     ]);
 
-    Message::withoutTimestamps(function () use ($message): void {
+    Message::withoutTimestamps(function () use ($message, $outsideRetryWindow): void {
         $message->forceFill([
-            'created_at' => now()->subHours(241),
+            'created_at' => $outsideRetryWindow,
             'updated_at' => now(),
         ])->save();
     });

@@ -18,6 +18,8 @@ class WhatsappMessageImporter
 
     private const OUTBOUND_RECONCILIATION_MINUTES = 10;
 
+    private const SQL_SERVER_DATETIME_FORMAT = 'Y-m-d H:i:s.v';
+
     private const ALLOWED_MEDIA_MIME_TYPES = [
         'image/jpeg',
         'image/png',
@@ -171,7 +173,7 @@ class WhatsappMessageImporter
         $body = $messageData['body'] ?? null;
         $reconciliationCutoff = now()
             ->subMinutes(self::OUTBOUND_RECONCILIATION_MINUTES)
-            ->format('Ymd H:i:s.v');
+            ->format(self::SQL_SERVER_DATETIME_FORMAT);
         $candidates = Message::query()
             ->where('conversation_id', $conversation->id)
             ->where('direction', 'outbound')

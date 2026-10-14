@@ -18,6 +18,8 @@ class RetryWhatsappMedia extends Command
 {
     private const PERMANENT_MEDIA_ERROR = 'Tipo de archivo no permitido.';
 
+    private const SQL_SERVER_DATETIME_FORMAT = 'Y-m-d H:i:s.v';
+
     private int $attempted = 0;
 
     private int $stored = 0;
@@ -48,15 +50,18 @@ class RetryWhatsappMedia extends Command
         $minutes = max(1, (int) $this->option('minutes'));
         $retryMediaCutoff = now()
             ->subHours(max(1, (int) config('openwa.retry_media_window_hours', 240)))
-            ->format('Ymd H:i:s.v');
+            ->format(self::SQL_SERVER_DATETIME_FORMAT);
         $updatedAtCutoff = now()->subMinutes($minutes);
+        $activityCutoffExpression = Message::query()->getConnection()->getDriverName() === 'sqlsrv'
+            ? 'COALESCE(sent_at, received_at, created_at) >= CONVERT(datetime2, ?, 121)'
+            : 'COALESCE(sent_at, received_at, created_at) >= ?';
 
         $messages = Message::query()
             ->with('conversation')
             ->whereIn('type', ['image', 'audio', 'video', 'document'])
             ->whereNotNull('external_id')
             ->where('updated_at', '>=', $updatedAtCutoff)
-            ->whereRaw('COALESCE(sent_at, received_at, created_at) >= ?', [$retryMediaCutoff])
+            ->whereRaw($activityCutoffExpression, [$retryMediaCutoff])
             ->where(function ($query): void {
                 $query->whereNull('media_error')
                     ->orWhere('media_error', '!=', self::PERMANENT_MEDIA_ERROR);
