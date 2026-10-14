@@ -52,9 +52,9 @@ class RetryWhatsappMedia extends Command
             ->subHours(max(1, (int) config('openwa.retry_media_window_hours', 240)))
             ->format(self::SQL_SERVER_DATETIME_FORMAT);
         $updatedAtCutoff = now()->subMinutes($minutes);
-        $activityCutoffExpression = Message::query()->getConnection()->getDriverName() === 'sqlsrv'
-            ? 'COALESCE(sent_at, received_at, created_at) >= CONVERT(datetime2, ?, 121)'
-            : 'COALESCE(sent_at, received_at, created_at) >= ?';
+        $databaseDriver = Message::query()->getConnection()->getDriverName();
+        $activityTimestampExpression = self::activityTimestampExpression($databaseDriver);
+        $activityCutoffExpression = self::activityCutoffExpression($databaseDriver, $activityTimestampExpression);
 
         $messages = Message::query()
             ->with('conversation')
@@ -76,7 +76,7 @@ class RetryWhatsappMedia extends Command
                         ->whereNotNull('media_path');
                 });
             })
-            ->orderByRaw('COALESCE(sent_at, received_at, created_at) DESC')
+            ->orderByRaw("{$activityTimestampExpression} DESC")
             ->lazy();
 
         foreach ($messages as $message) {
@@ -143,6 +143,31 @@ class RetryWhatsappMedia extends Command
             'media_next_retry_at' => null,
             'media_retry_attempts' => 0,
         ])->save();
+    }
+
+    private static function activityTimestampExpression(string $databaseDriver): string
+    {
+        if ($databaseDriver !== 'sqlsrv') {
+            return 'COALESCE(sent_at, received_at, created_at)';
+        }
+
+        return implode(', ', [
+            'COALESCE(TRY_CONVERT(datetime2, sent_at, 121)',
+            'TRY_CONVERT(datetime2, sent_at)',
+            'TRY_CONVERT(datetime2, received_at, 121)',
+            'TRY_CONVERT(datetime2, received_at)',
+            'TRY_CONVERT(datetime2, created_at, 121)',
+            'TRY_CONVERT(datetime2, created_at))',
+        ]);
+    }
+
+    private static function activityCutoffExpression(string $databaseDriver, string $activityTimestampExpression): string
+    {
+        if ($databaseDriver === 'sqlsrv') {
+            return "{$activityTimestampExpression} >= CONVERT(datetime2, ?, 121)";
+        }
+
+        return "{$activityTimestampExpression} >= ?";
     }
 
     private function readySessionId(OpenWaClient $client): ?string

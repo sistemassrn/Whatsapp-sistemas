@@ -1,5 +1,6 @@
 <?php
 
+use App\Console\Commands\RetryWhatsappMedia;
 use App\Models\Conversation;
 use App\Models\Message;
 use App\Services\OpenWaClient;
@@ -497,6 +498,29 @@ it('binds the retry media raw cutoff with a SQL Server safe datetime format', fu
         ->and($rawCutoffBinding)->not->toMatch('/^\d{8} /');
 
     Carbon::setTestNow();
+});
+
+it('uses a non-throwing SQL Server activity timestamp expression for retry media queries', function () {
+    $activityTimestampExpression = invokeRetryMediaStaticMethod('activityTimestampExpression', ['sqlsrv']);
+    $activityCutoffExpression = invokeRetryMediaStaticMethod('activityCutoffExpression', ['sqlsrv', $activityTimestampExpression]);
+
+    expect($activityTimestampExpression)->toBe(implode(', ', [
+        'COALESCE(TRY_CONVERT(datetime2, sent_at, 121)',
+        'TRY_CONVERT(datetime2, sent_at)',
+        'TRY_CONVERT(datetime2, received_at, 121)',
+        'TRY_CONVERT(datetime2, received_at)',
+        'TRY_CONVERT(datetime2, created_at, 121)',
+        'TRY_CONVERT(datetime2, created_at))',
+    ]))
+        ->and($activityCutoffExpression)->toBe("{$activityTimestampExpression} >= CONVERT(datetime2, ?, 121)");
+});
+
+it('keeps the portable activity timestamp expression for non SQL Server retry media queries', function () {
+    $activityTimestampExpression = invokeRetryMediaStaticMethod('activityTimestampExpression', ['sqlite']);
+    $activityCutoffExpression = invokeRetryMediaStaticMethod('activityCutoffExpression', ['sqlite', $activityTimestampExpression]);
+
+    expect($activityTimestampExpression)->toBe('COALESCE(sent_at, received_at, created_at)')
+        ->and($activityCutoffExpression)->toBe('COALESCE(sent_at, received_at, created_at) >= ?');
 });
 
 it('retries stored media with the retry command when the local file is missing', function () {
@@ -1250,3 +1274,13 @@ it('stores webhook media as failed when base64 payload is invalid', function () 
         ->and($message->media_download_status)->toBe('failed')
         ->and($message->media_error)->toBe('No se pudo decodificar el contenido multimedia.');
 });
+
+/**
+ * @param  list<mixed>  $arguments
+ */
+function invokeRetryMediaStaticMethod(string $method, array $arguments): mixed
+{
+    $reflectionMethod = new ReflectionMethod(RetryWhatsappMedia::class, $method);
+
+    return $reflectionMethod->invoke(null, ...$arguments);
+}
