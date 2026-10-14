@@ -53,15 +53,12 @@ class RetryWhatsappMedia extends Command
             ->format(self::SQL_SERVER_DATETIME_FORMAT);
         $updatedAtCutoff = now()->subMinutes($minutes);
         $databaseDriver = Message::query()->getConnection()->getDriverName();
-        $activityTimestampExpression = self::activityTimestampExpression($databaseDriver);
-        $activityCutoffExpression = self::activityCutoffExpression($databaseDriver, $activityTimestampExpression);
 
         $messages = Message::query()
             ->with('conversation')
             ->whereIn('type', ['image', 'audio', 'video', 'document'])
             ->whereNotNull('external_id')
             ->where('updated_at', '>=', $updatedAtCutoff)
-            ->whereRaw($activityCutoffExpression, [$retryMediaCutoff])
             ->where(function ($query): void {
                 $query->whereNull('media_error')
                     ->orWhere('media_error', '!=', self::PERMANENT_MEDIA_ERROR);
@@ -76,7 +73,15 @@ class RetryWhatsappMedia extends Command
                         ->whereNotNull('media_path');
                 });
             })
-            ->orderByRaw("{$activityTimestampExpression} DESC")
+            ->when($databaseDriver === 'sqlsrv', function ($query): void {
+                $query->orderByDesc('updated_at');
+            }, function ($query) use ($databaseDriver, $retryMediaCutoff): void {
+                $activityTimestampExpression = self::activityTimestampExpression($databaseDriver);
+
+                $query
+                    ->whereRaw(self::activityCutoffExpression($databaseDriver, $activityTimestampExpression), [$retryMediaCutoff])
+                    ->orderByRaw("{$activityTimestampExpression} DESC");
+            })
             ->lazy();
 
         foreach ($messages as $message) {
@@ -147,26 +152,13 @@ class RetryWhatsappMedia extends Command
 
     private static function activityTimestampExpression(string $databaseDriver): string
     {
-        if ($databaseDriver !== 'sqlsrv') {
-            return 'COALESCE(sent_at, received_at, created_at)';
-        }
-
-        return implode(', ', [
-            'COALESCE(TRY_CONVERT(datetime2, sent_at, 121)',
-            'TRY_CONVERT(datetime2, sent_at)',
-            'TRY_CONVERT(datetime2, received_at, 121)',
-            'TRY_CONVERT(datetime2, received_at)',
-            'TRY_CONVERT(datetime2, created_at, 121)',
-            'TRY_CONVERT(datetime2, created_at))',
-        ]);
+        return $databaseDriver === 'sqlsrv'
+            ? 'updated_at'
+            : 'COALESCE(sent_at, received_at, created_at)';
     }
 
     private static function activityCutoffExpression(string $databaseDriver, string $activityTimestampExpression): string
     {
-        if ($databaseDriver === 'sqlsrv') {
-            return "{$activityTimestampExpression} >= CONVERT(datetime2, ?, 121)";
-        }
-
         return "{$activityTimestampExpression} >= ?";
     }
 

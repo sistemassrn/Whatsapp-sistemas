@@ -500,19 +500,12 @@ it('binds the retry media raw cutoff with a SQL Server safe datetime format', fu
     Carbon::setTestNow();
 });
 
-it('uses a non-throwing SQL Server activity timestamp expression for retry media queries', function () {
+it('uses updated at instead of raw activity datetime conversion for SQL Server retry media queries', function () {
     $activityTimestampExpression = invokeRetryMediaStaticMethod('activityTimestampExpression', ['sqlsrv']);
     $activityCutoffExpression = invokeRetryMediaStaticMethod('activityCutoffExpression', ['sqlsrv', $activityTimestampExpression]);
 
-    expect($activityTimestampExpression)->toBe(implode(', ', [
-        'COALESCE(TRY_CONVERT(datetime2, sent_at, 121)',
-        'TRY_CONVERT(datetime2, sent_at)',
-        'TRY_CONVERT(datetime2, received_at, 121)',
-        'TRY_CONVERT(datetime2, received_at)',
-        'TRY_CONVERT(datetime2, created_at, 121)',
-        'TRY_CONVERT(datetime2, created_at))',
-    ]))
-        ->and($activityCutoffExpression)->toBe("{$activityTimestampExpression} >= CONVERT(datetime2, ?, 121)");
+    expect($activityTimestampExpression)->toBe('updated_at')
+        ->and($activityCutoffExpression)->toBe('updated_at >= ?');
 });
 
 it('keeps the portable activity timestamp expression for non SQL Server retry media queries', function () {
