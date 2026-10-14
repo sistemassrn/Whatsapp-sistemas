@@ -11,13 +11,14 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Inertia\Inertia;
 use Inertia\Response;
 
 class WhatsappConversationsController extends Controller
 {
-    private const SQL_SERVER_DATETIME_FORMAT = 'Y-m-d H:i:s.v';
+    private const SQL_SERVER_SAFE_DATETIME_FORMAT = 'Ymd H:i:s.v';
 
     public function __invoke(Request $request, WhatsappConnectionStatus $connectionStatus): Response|RedirectResponse
     {
@@ -346,11 +347,13 @@ class WhatsappConversationsController extends Controller
         return Message::query()
             ->where('conversation_id', $conversation->id)
             ->when($conversation->last_read_at !== null, function (Builder $query) use ($conversation): void {
-                $activityCutoffExpression = $query->getConnection()->getDriverName() === 'sqlsrv'
-                    ? 'COALESCE(sent_at, received_at, created_at) > CONVERT(datetime2, ?, 121)'
-                    : 'COALESCE(sent_at, received_at, created_at) > ?';
+                $dateFormat = $query->getConnection()->getDriverName() === 'sqlsrv'
+                    ? self::SQL_SERVER_SAFE_DATETIME_FORMAT
+                    : Carbon::DEFAULT_TO_STRING_FORMAT;
 
-                $query->whereRaw($activityCutoffExpression, [$conversation->last_read_at->format(self::SQL_SERVER_DATETIME_FORMAT)]);
+                $query->whereRaw('COALESCE(sent_at, received_at, created_at) > ?', [
+                    $conversation->last_read_at->format($dateFormat),
+                ]);
             })
             ->orderByRaw('COALESCE(sent_at, received_at, created_at) asc')
             ->orderBy('id')

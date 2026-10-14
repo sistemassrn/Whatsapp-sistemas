@@ -5,11 +5,13 @@ namespace App\Console\Commands;
 use App\Models\Message;
 use App\Services\OpenWaClient;
 use App\Services\WhatsappMessageMediaDownloader;
+use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
 use Illuminate\Console\Command;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
 
 #[Signature('whatsapp:retry-media {--limit=50} {--minutes=1440}')]
@@ -18,7 +20,7 @@ class RetryWhatsappMedia extends Command
 {
     private const PERMANENT_MEDIA_ERROR = 'Tipo de archivo no permitido.';
 
-    private const SQL_SERVER_DATETIME_FORMAT = 'Y-m-d H:i:s.v';
+    private const SQL_SERVER_SAFE_DATETIME_FORMAT = 'Ymd H:i:s.v';
 
     private int $attempted = 0;
 
@@ -48,11 +50,13 @@ class RetryWhatsappMedia extends Command
 
         $limit = max(1, (int) $this->option('limit'));
         $minutes = max(1, (int) $this->option('minutes'));
-        $retryMediaCutoff = now()
-            ->subHours(max(1, (int) config('openwa.retry_media_window_hours', 240)))
-            ->format(self::SQL_SERVER_DATETIME_FORMAT);
-        $updatedAtCutoff = now()->subMinutes($minutes);
         $databaseDriver = Message::query()->getConnection()->getDriverName();
+        $retryMediaCutoff = self::dateCutoffForDriver(
+            now()->subHours(max(1, (int) config('openwa.retry_media_window_hours', 240))),
+            $databaseDriver,
+        );
+        $updatedAtCutoff = self::dateCutoffForDriver(now()->subMinutes($minutes), $databaseDriver);
+        $activityTimestampExpression = self::activityTimestampExpression($databaseDriver);
 
         $messages = Message::query()
             ->with('conversation')
@@ -73,15 +77,8 @@ class RetryWhatsappMedia extends Command
                         ->whereNotNull('media_path');
                 });
             })
-            ->when($databaseDriver === 'sqlsrv', function ($query): void {
-                $query->orderByDesc('updated_at');
-            }, function ($query) use ($databaseDriver, $retryMediaCutoff): void {
-                $activityTimestampExpression = self::activityTimestampExpression($databaseDriver);
-
-                $query
-                    ->whereRaw(self::activityCutoffExpression($databaseDriver, $activityTimestampExpression), [$retryMediaCutoff])
-                    ->orderByRaw("{$activityTimestampExpression} DESC");
-            })
+            ->whereRaw(self::activityCutoffExpression($databaseDriver, $activityTimestampExpression), [$retryMediaCutoff])
+            ->orderByRaw("{$activityTimestampExpression} DESC")
             ->lazy();
 
         foreach ($messages as $message) {
@@ -152,14 +149,21 @@ class RetryWhatsappMedia extends Command
 
     private static function activityTimestampExpression(string $databaseDriver): string
     {
-        return $databaseDriver === 'sqlsrv'
-            ? 'updated_at'
-            : 'COALESCE(sent_at, received_at, created_at)';
+        return 'COALESCE(sent_at, received_at, created_at)';
     }
 
     private static function activityCutoffExpression(string $databaseDriver, string $activityTimestampExpression): string
     {
         return "{$activityTimestampExpression} >= ?";
+    }
+
+    private static function dateCutoffForDriver(CarbonInterface $date, string $databaseDriver): string
+    {
+        $format = $databaseDriver === 'sqlsrv'
+            ? self::SQL_SERVER_SAFE_DATETIME_FORMAT
+            : Carbon::DEFAULT_TO_STRING_FORMAT;
+
+        return $date->format($format);
     }
 
     private function readySessionId(OpenWaClient $client): ?string

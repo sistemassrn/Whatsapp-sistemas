@@ -8,7 +8,6 @@ use App\Services\WhatsappMessageMediaDownloader;
 use Illuminate\Auth\Middleware\Authenticate;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
@@ -435,77 +434,19 @@ it('downloads omitted media with the retry command', function () {
     expect(Storage::disk('whatsapp_media')->get($message->media_path))->toBe('retry-audio-bytes');
 });
 
-it('binds the retry media raw cutoff with a SQL Server safe datetime format', function () {
-    Storage::fake('whatsapp_media');
-    Carbon::setTestNow(Carbon::parse('2026-10-14 07:00:13.875'));
-    config([
-        'openwa.session_name' => 'whatsapp-sistemas',
-        'openwa.retry_media_window_hours' => 240,
-    ]);
+it('formats SQL Server retry media cutoffs with compact datetime strings', function () {
+    $date = Carbon::parse('2026-10-13 09:19:13.290');
 
-    $conversation = Conversation::query()->create([
-        'external_id' => '5491100000000@c.us',
-        'title' => 'Cliente Demo',
-    ]);
-
-    Message::query()->create([
-        'conversation_id' => $conversation->id,
-        'external_id' => 'wamid-retry-binding-format',
-        'direction' => 'inbound',
-        'body' => null,
-        'type' => 'image',
-        'status' => 'received',
-        'sent_at' => now()->subHour(),
-        'media_download_status' => 'omitted',
-    ]);
-
-    app()->instance(OpenWaClient::class, new class extends OpenWaClient
-    {
-        public function findSessionByName(string $name): ?array
-        {
-            return [
-                'id' => 'session-1',
-                'name' => $name,
-                'status' => 'ready',
-            ];
-        }
-    });
-    app()->instance(WhatsappMessageMediaDownloader::class, new class(app(OpenWaClient::class)) extends WhatsappMessageMediaDownloader
-    {
-        public function attempt(Message $message, string $sessionId, ?string $chatId = null, array $context = []): bool
-        {
-            return false;
-        }
-    });
-
-    $rawCutoffBindings = [];
-    DB::listen(function ($query) use (&$rawCutoffBindings): void {
-        if (str_contains($query->sql, 'COALESCE(sent_at, received_at, created_at)')) {
-            $rawCutoffBindings[] = $query->bindings;
-        }
-    });
-
-    expect(Artisan::call('whatsapp:retry-media', [
-        '--limit' => 1,
-        '--minutes' => 1440,
-    ]))->toBe(0);
-
-    $rawCutoffBinding = collect($rawCutoffBindings)
-        ->flatten()
-        ->first(fn ($binding): bool => is_string($binding) && str_contains($binding, '2026-10-04'));
-
-    expect($rawCutoffBinding)->toBe('2026-10-04 07:00:13.875')
-        ->and($rawCutoffBinding)->not->toMatch('/^\d{8} /');
-
-    Carbon::setTestNow();
+    expect(invokeRetryMediaStaticMethod('dateCutoffForDriver', [$date, 'sqlsrv']))->toBe('20261013 09:19:13.290')
+        ->and(invokeRetryMediaStaticMethod('dateCutoffForDriver', [$date, 'sqlite']))->toBe('2026-10-13 09:19:13');
 });
 
-it('uses updated at instead of raw activity datetime conversion for SQL Server retry media queries', function () {
+it('keeps activity timestamp filtering for SQL Server retry media queries', function () {
     $activityTimestampExpression = invokeRetryMediaStaticMethod('activityTimestampExpression', ['sqlsrv']);
     $activityCutoffExpression = invokeRetryMediaStaticMethod('activityCutoffExpression', ['sqlsrv', $activityTimestampExpression]);
 
-    expect($activityTimestampExpression)->toBe('updated_at')
-        ->and($activityCutoffExpression)->toBe('updated_at >= ?');
+    expect($activityTimestampExpression)->toBe('COALESCE(sent_at, received_at, created_at)')
+        ->and($activityCutoffExpression)->toBe('COALESCE(sent_at, received_at, created_at) >= ?');
 });
 
 it('keeps the portable activity timestamp expression for non SQL Server retry media queries', function () {
