@@ -16,17 +16,20 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use League\Flysystem\UnableToReadFile;
 
 class ConversationMessageController extends Controller
 {
     public function store(StoreConversationMessageRequest $request, Conversation $conversation, OpenWaClient $client): RedirectResponse
     {
-        /** @var array{body?: string|null, idempotency_key: string, ptt?: bool, voice?: bool} $validated */
+        /** @var array{body?: string|null, idempotency_key: string, reply_to_message_id?: int|null, ptt?: bool, voice?: bool} $validated */
         $validated = $request->validated();
         $uploadedMediaFiles = $request->mediaFiles();
         $body = trim((string) ($validated['body'] ?? ''));
         $isMediaSend = count($uploadedMediaFiles) > 0;
+        $replyToMessage = $this->replyToMessage($conversation, $validated['reply_to_message_id'] ?? null);
+        $quotedMessageId = $replyToMessage?->external_id;
         $messages = [];
 
         if (! $isMediaSend && $body === '') {
@@ -63,6 +66,11 @@ class ConversationMessageController extends Controller
                     'status' => 'pending',
                     'idempotency_key' => $messageInput['idempotency_key'],
                     'sent_at' => $now,
+                    'reply_to_message_id' => $replyToMessage?->id,
+                    'quoted_message_external_id' => $quotedMessageId,
+                    'quoted_message_snapshot' => $replyToMessage === null
+                        ? null
+                        : $this->quotedMessageSnapshot($replyToMessage),
                 ]);
             } catch (QueryException $exception) {
                 $duplicateMessage = Message::query()
@@ -123,8 +131,8 @@ class ConversationMessageController extends Controller
 
             foreach ($messages as $message) {
                 $response = $message->media_path !== null
-                    ? $this->sendMediaMessage($client, $sessionId, $conversation->external_id, $message, (bool) ($validated['ptt'] ?? $validated['voice'] ?? false))
-                    : $client->sendTextMessage($sessionId, $conversation->external_id, $message->body ?? '');
+                    ? $this->sendMediaMessage($client, $sessionId, $conversation->external_id, $message, (bool) ($validated['ptt'] ?? $validated['voice'] ?? false), $quotedMessageId)
+                    : $client->sendTextMessage($sessionId, $conversation->external_id, $message->body ?? '', $quotedMessageId);
                 $message->status = 'accepted';
 
                 $externalId = $this->messageExternalId($response);
@@ -385,7 +393,7 @@ class ConversationMessageController extends Controller
     /**
      * @return array<string, mixed>
      */
-    private function sendMediaMessage(OpenWaClient $client, string $sessionId, string $chatId, Message $message, bool $ptt): array
+    private function sendMediaMessage(OpenWaClient $client, string $sessionId, string $chatId, Message $message, bool $ptt, ?string $quotedMessageId): array
     {
         if ($message->media_path === null || $message->media_mime_type === null) {
             throw new \RuntimeException('El mensaje no tiene un archivo almacenado para enviar.');
@@ -399,10 +407,57 @@ class ConversationMessageController extends Controller
         $filename = $message->media_filename ?: basename($message->media_path);
 
         return match ($message->type) {
-            'image' => $client->sendImageMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $message->body),
-            'video' => $client->sendVideoMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $message->body),
-            'audio' => $client->sendAudioMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $ptt),
-            default => $client->sendDocumentMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $message->body),
+            'image' => $client->sendImageMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $message->body, $quotedMessageId),
+            'video' => $client->sendVideoMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $message->body, $quotedMessageId),
+            'audio' => $client->sendAudioMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $ptt, $quotedMessageId),
+            default => $client->sendDocumentMessage($sessionId, $chatId, $base64, $message->media_mime_type, $filename, $message->body, $quotedMessageId),
+        };
+    }
+
+    private function replyToMessage(Conversation $conversation, ?int $replyToMessageId): ?Message
+    {
+        if ($replyToMessageId === null) {
+            return null;
+        }
+
+        $replyToMessage = Message::query()
+            ->where('conversation_id', $conversation->id)
+            ->find($replyToMessageId);
+
+        $externalId = $replyToMessage?->external_id;
+
+        if ($externalId === null || trim($externalId) === '') {
+            throw ValidationException::withMessages([
+                'reply_to_message_id' => 'El mensaje seleccionado para responder ya no está disponible.',
+            ]);
+        }
+
+        return $replyToMessage;
+    }
+
+    /**
+     * @return array{direction: string, type: string, body: string|null, label: string}
+     */
+    private function quotedMessageSnapshot(Message $message): array
+    {
+        return [
+            'direction' => $message->direction,
+            'type' => $message->type,
+            'body' => $message->body,
+            'label' => $this->messageLabel($message->type),
+        ];
+    }
+
+    private function messageLabel(string $type): string
+    {
+        return match ($type) {
+            'contact' => 'Contacto',
+            'image' => 'Imagen',
+            'video' => 'Video',
+            'audio' => 'Audio',
+            'document' => 'Documento',
+            'text' => 'Mensaje',
+            default => 'Archivo',
         };
     }
 

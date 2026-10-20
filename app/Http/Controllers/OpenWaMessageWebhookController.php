@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Message;
 use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
+use App\Services\WhatsappMessageImportSource;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -59,10 +60,17 @@ class OpenWaMessageWebhookController extends Controller
             ]);
         }
 
-        $result = $importer->importMessage($messagePayload, $chatPayload);
+        $result = $importer->importMessage($messagePayload, $chatPayload, WhatsappMessageImportSource::Webhook);
         $message = $result['message'];
 
         if (! $message instanceof Message) {
+            if ($result['reason'] === 'orphan_mutation') {
+                return response()->json([
+                    'status' => 'ignored',
+                    'reason' => 'orphan_mutation',
+                ]);
+            }
+
             return response()->json(['message' => 'Missing chat id'], 422);
         }
 

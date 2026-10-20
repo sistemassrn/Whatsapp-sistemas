@@ -6,6 +6,7 @@ use App\Models\Message;
 use App\Services\OpenWaClient;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
@@ -13,6 +14,55 @@ use Illuminate\Support\Str;
 
 class MessageMutationController extends Controller
 {
+    public function react(Request $request, Message $message, OpenWaClient $client): JsonResponse
+    {
+        $emoji = $request->input('emoji');
+
+        if (! $request->has('emoji') || ($emoji !== null && ! is_string($emoji))) {
+            return response()->json([
+                'message' => 'La reacción debe ser un emoji Unicode válido.',
+                'errors' => ['emoji' => ['La reacción debe ser un emoji Unicode válido.']],
+            ], 422);
+        }
+
+        $emoji = $emoji ?? '';
+
+        if (! $this->isValidReactionEmoji($emoji)) {
+            return response()->json([
+                'message' => 'La reacción debe ser un emoji Unicode válido.',
+                'errors' => ['emoji' => ['La reacción debe ser un emoji Unicode válido.']],
+            ], 422);
+        }
+
+        if (! $this->canReactToMessage($message)) {
+            return response()->json([
+                'message' => 'No se puede reaccionar a este mensaje.',
+                'errors' => ['message' => ['No se puede reaccionar a este mensaje.']],
+            ], 422);
+        }
+
+        try {
+            $sessionId = $this->readySessionId($client);
+            $client->reactToMessage($sessionId, $message->remoteChatId(), (string) $message->external_id, $emoji);
+            $acceptedAt = now();
+
+            $message->update([
+                'accepted_reaction_emoji' => $emoji,
+                'accepted_reaction_at' => $acceptedAt,
+            ]);
+
+            return response()->json([
+                'status' => 'accepted',
+                'accepted_reaction_emoji' => $emoji,
+                'accepted_reaction_at' => $acceptedAt->toISOString(),
+            ]);
+        } catch (ConnectionException|RequestException) {
+            return response()->json(['message' => 'No se pudo actualizar la reacción.'], 502);
+        } catch (\RuntimeException $exception) {
+            return response()->json(['message' => $this->safeRuntimeMutationError($exception)], 503);
+        }
+    }
+
     public function update(Request $request, Message $message, OpenWaClient $client): RedirectResponse
     {
         $validated = $request->validate([
@@ -34,7 +84,7 @@ class MessageMutationController extends Controller
 
         try {
             $sessionId = $this->readySessionId($client);
-            $client->editMessage($sessionId, $message->conversation->external_id, (string) $message->external_id, $body);
+            $client->editMessage($sessionId, $message->remoteChatId(), (string) $message->external_id, $body);
 
             $message->update([
                 'body' => $body,
@@ -75,7 +125,7 @@ class MessageMutationController extends Controller
 
         try {
             $sessionId = $this->readySessionId($client);
-            $client->deleteMessage($sessionId, $message->conversation->external_id, (string) $message->external_id);
+            $client->deleteMessage($sessionId, $message->remoteChatId(), (string) $message->external_id);
 
             $message->update([
                 'deleted_at' => now(),
@@ -135,6 +185,23 @@ class MessageMutationController extends Controller
         }
 
         return null;
+    }
+
+    private function canReactToMessage(Message $message): bool
+    {
+        return $message->external_id !== null
+            && $message->external_id !== ''
+            && $message->deleted_at === null
+            && ! in_array($message->status, ['pending', 'verifying'], true);
+    }
+
+    private function isValidReactionEmoji(string $emoji): bool
+    {
+        if ($emoji === '') {
+            return true;
+        }
+
+        return preg_match('/^(?:\p{Regional_Indicator}{2}|[0-9#*]\x{FE0F}?\x{20E3}|\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\x{FE0F}|\x{200D}\p{Extended_Pictographic}(?:\p{Emoji_Modifier}|\x{FE0F})?)*)$/u', $emoji) === 1;
     }
 
     private function readySessionId(OpenWaClient $client): string

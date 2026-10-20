@@ -59,6 +59,161 @@ it('stores an outbound message and sends it to OpenWA', function () {
         && $request['text'] === 'Hola desde Laravel');
 });
 
+it('forwards the replied message external id when sending text', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/sessions/session-1/messages/send-text' => Http::response([
+            'messageId' => 'openwa-reply-1',
+        ]),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $replyTarget = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'incoming-message-1',
+        'direction' => 'inbound',
+        'body' => 'Mensaje recibido',
+        'type' => 'text',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $this->post(route('whatsapp.conversations.messages.store', $conversation), [
+        'body' => 'Respuesta desde Laravel',
+        'reply_to_message_id' => $replyTarget->id,
+        'idempotency_key' => 'send-reply-key-1',
+    ])->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+
+    $reply = Message::query()->where('idempotency_key', 'send-reply-key-1')->firstOrFail();
+
+    expect($reply->reply_to_message_id)->toBe($replyTarget->id)
+        ->and($reply->quoted_message_external_id)->toBe('incoming-message-1')
+        ->and($reply->quoted_message_snapshot)->toBe([
+            'direction' => 'inbound',
+            'type' => 'text',
+            'body' => 'Mensaje recibido',
+            'label' => 'Mensaje',
+        ]);
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'http://openwa.test/api/sessions/session-1/messages/send-text'
+        && $request['chatId'] === '5491100000000@c.us'
+        && $request['text'] === 'Respuesta desde Laravel'
+        && $request['quotedMessageId'] === 'incoming-message-1');
+});
+
+it('rejects a reply target from another conversation', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $otherConversation = Conversation::query()->create([
+        'external_id' => '5491200000000@c.us',
+        'title' => 'Otro cliente',
+    ]);
+    $replyTarget = Message::query()->create([
+        'conversation_id' => $otherConversation->id,
+        'external_id' => 'foreign-message-1',
+        'direction' => 'inbound',
+        'body' => 'Mensaje ajeno',
+        'type' => 'text',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $this
+        ->from(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'body' => 'No se debe enviar',
+            'reply_to_message_id' => $replyTarget->id,
+            'idempotency_key' => 'send-foreign-reply-key-1',
+        ])
+        ->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->assertSessionHasErrors([
+            'reply_to_message_id' => 'El mensaje seleccionado para responder ya no está disponible.',
+        ]);
+
+    expect(Message::query()->count())->toBe(1);
+});
+
+it('rejects a reply target without an external id', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $replyTarget = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'direction' => 'outbound',
+        'body' => 'Mensaje pendiente',
+        'type' => 'text',
+        'status' => 'pending',
+        'sent_at' => now(),
+    ]);
+
+    $this
+        ->from(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'body' => 'No se debe enviar',
+            'reply_to_message_id' => $replyTarget->id,
+            'idempotency_key' => 'send-missing-external-reply-key-1',
+        ])
+        ->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->assertSessionHasErrors([
+            'reply_to_message_id' => 'El mensaje seleccionado para responder ya no está disponible.',
+        ]);
+
+    expect(Message::query()->count())->toBe(1);
+});
+
+it('rejects a reply target with a blank external id', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $replyTarget = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => '   ',
+        'direction' => 'outbound',
+        'body' => 'Mensaje inválido',
+        'type' => 'text',
+        'status' => 'accepted',
+        'sent_at' => now(),
+    ]);
+
+    $this
+        ->from(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->post(route('whatsapp.conversations.messages.store', $conversation), [
+            'body' => 'No se debe enviar',
+            'reply_to_message_id' => $replyTarget->id,
+            'idempotency_key' => 'send-blank-external-reply-key-1',
+        ])
+        ->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->assertSessionHasErrors([
+            'reply_to_message_id' => 'El mensaje seleccionado para responder ya no está disponible.',
+        ]);
+
+    expect(Message::query()->count())->toBe(1);
+});
+
 it('stores an outbound media message and sends base64 to OpenWA', function () {
     $this->withoutMiddleware(Authenticate::class);
 
@@ -112,6 +267,61 @@ it('stores an outbound media message and sends base64 to OpenWA', function () {
         && $request['caption'] === 'Mirá esta foto'
         && is_string($request['base64'])
         && $request['base64'] !== '');
+});
+
+it('forwards the replied message external id when sending media', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    Storage::fake('whatsapp_media');
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+
+    Http::fake([
+        'openwa.test/api/sessions/session-1/messages/send-image' => Http::response([
+            'messageId' => 'openwa-reply-media-1',
+        ]),
+        'openwa.test/api/sessions*' => Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]),
+    ]);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491100000000@c.us',
+        'title' => 'Cliente Demo',
+    ]);
+    $replyTarget = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'incoming-media-message-1',
+        'direction' => 'inbound',
+        'body' => null,
+        'type' => 'image',
+        'status' => 'received',
+        'received_at' => now(),
+    ]);
+
+    $this->post(route('whatsapp.conversations.messages.store', $conversation), [
+        'media' => [UploadedFile::fake()->image('foto.jpg', 20, 20)],
+        'reply_to_message_id' => $replyTarget->id,
+        'idempotency_key' => 'send-media-reply-key-1',
+    ])->assertRedirect(route('whatsapp.conversations', ['chat' => $conversation->external_id]));
+
+    $reply = Message::query()->where('idempotency_key', 'send-media-reply-key-1')->firstOrFail();
+
+    expect($reply->reply_to_message_id)->toBe($replyTarget->id)
+        ->and($reply->quoted_message_external_id)->toBe('incoming-media-message-1')
+        ->and($reply->quoted_message_snapshot)->toBe([
+            'direction' => 'inbound',
+            'type' => 'image',
+            'body' => null,
+            'label' => 'Imagen',
+        ]);
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'http://openwa.test/api/sessions/session-1/messages/send-image'
+        && $request['quotedMessageId'] === 'incoming-media-message-1');
 });
 
 it('stores an outbound contact message and sends it to OpenWA', function () {

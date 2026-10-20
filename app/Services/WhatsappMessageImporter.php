@@ -71,7 +71,7 @@ class WhatsappMessageImporter
      * @param  array<string, mixed>|null  $chatPayload
      * @return array{message: Message|null, created: bool, reason: string|null}
      */
-    public function importMessage(array $messagePayload, ?array $chatPayload = null, bool $unhideConversation = true): array
+    public function importMessage(array $messagePayload, ?array $chatPayload = null, WhatsappMessageImportSource $source = WhatsappMessageImportSource::Webhook): array
     {
         $fromMe = (bool) data_get($messagePayload, 'fromMe', false);
         $messageExternalId = $this->messageExternalId($messagePayload);
@@ -86,6 +86,15 @@ class WhatsappMessageImporter
             }
         }
 
+        if ($this->isMutationPayload($messagePayload)) {
+            Log::info('WhatsApp orphan message mutation ignored.', [
+                'source' => $source->value,
+                'mutation' => $this->isDeletedPayload($messagePayload) ? 'delete' : 'edit',
+            ]);
+
+            return ['message' => null, 'created' => false, 'reason' => 'orphan_mutation'];
+        }
+
         $chatExternalId = $this->chatExternalId($messagePayload, $fromMe)
             ?? $this->chatExternalIdFromChat($chatPayload ?? []);
 
@@ -93,23 +102,22 @@ class WhatsappMessageImporter
             return ['message' => null, 'created' => false, 'reason' => 'missing_chat_id'];
         }
 
+        app(WhatsappConversationResolver::class)->verifyLid($chatExternalId);
         $messageType = $this->messageType($messagePayload);
         $media = $this->extractMedia($messagePayload, $messageType);
 
-        $result = DB::transaction(function () use ($chatExternalId, $chatPayload, $fromMe, $media, $messageExternalId, $messagePayload, $messageType, $unhideConversation): array {
+        $result = DB::transaction(function () use ($chatExternalId, $chatPayload, $fromMe, $media, $messageExternalId, $messagePayload, $messageType, $source): array {
             $contact = $this->upsertContact($messagePayload, $chatPayload, $chatExternalId, $fromMe);
-            $conversation = Conversation::query()->firstOrNew(['external_id' => $chatExternalId]);
-
-            if ($contact !== null) {
-                $conversation->contact_id = $contact->id;
-            }
+            $conversation = app(WhatsappConversationResolver::class)->resolve($chatExternalId, $contact);
 
             if (! is_string($conversation->title) || trim($conversation->title) === '') {
                 $conversation->title = $this->conversationTitle($messagePayload, $chatPayload, $chatExternalId, $fromMe);
             }
 
             $conversation->save();
-            $timestamp = $this->messageTimestamp($messagePayload);
+            $timestamp = $this->remoteTimestamp($messagePayload);
+            $hiddenAt = $conversation->hidden_at;
+            $shouldReactivate = $this->shouldReactivateConversation($conversation, $timestamp, $source);
 
             $messageData = [
                 'conversation_id' => $conversation->id,
@@ -125,17 +133,15 @@ class WhatsappMessageImporter
             $messageData = array_merge($messageData, $this->mediaAttributes($messagePayload, $media, $messageType));
             $messageData = array_merge($messageData, $this->mutationAttributes($messagePayload));
 
+            if ($conversation->external_id !== $chatExternalId) {
+                $messageData['media_metadata'] = array_merge($messageData['media_metadata'] ?? [], ['source_chat_id' => $chatExternalId]);
+            }
+
             $reconciledMessage = $this->reconcileLocalOutboundMessage($conversation, $messageData, $messagePayload, $messageExternalId, $messageType);
 
             if ($reconciledMessage !== null) {
-                $messageTimestamp = $reconciledMessage->sent_at ?? $reconciledMessage->received_at ?? $reconciledMessage->created_at;
-
-                $conversation->forceFill([
-                    'last_message_id' => $reconciledMessage->id,
-                    'last_message_at' => $messageTimestamp,
-                    'hidden_at' => $unhideConversation ? null : $conversation->hidden_at,
-                    'hidden_reason' => $unhideConversation ? null : $conversation->hidden_reason,
-                ])->save();
+                $this->reactivateConversation($conversation, $shouldReactivate);
+                $this->refreshConversationLastMessage($conversation);
 
                 return ['message' => $reconciledMessage, 'created' => false, 'reason' => 'reconciled'];
             }
@@ -143,19 +149,15 @@ class WhatsappMessageImporter
             $message = Message::query()->create($messageData);
             $messageTimestamp = $message->sent_at ?? $message->received_at ?? $message->created_at;
 
-            $conversation->forceFill([
-                'last_message_id' => $message->id,
-                'last_message_at' => $messageTimestamp,
-                'hidden_at' => $unhideConversation ? null : $conversation->hidden_at,
-                'hidden_reason' => $unhideConversation ? null : $conversation->hidden_reason,
-            ])->save();
+            $this->reactivateConversation($conversation, $shouldReactivate);
+            $this->refreshConversationLastMessage($conversation);
 
-            if (! $fromMe && $this->shouldIncreaseUnreadCount($conversation, $messageTimestamp)) {
+            if (! $fromMe && $this->shouldIncreaseUnreadCount($conversation, $timestamp, $messageTimestamp, $hiddenAt, $source)) {
                 $conversation->increment('unread_count');
             }
 
             return ['message' => $message, 'created' => true, 'reason' => null];
-        });
+        }, attempts: 3);
 
         return $result;
     }
@@ -210,6 +212,10 @@ class WhatsappMessageImporter
         $message = $matchingCandidates->first();
         $attributes = array_merge($messageData, $this->mutationAttributes($messagePayload));
         $attributes['error_message'] = null;
+
+        if ($message->media_metadata !== null) {
+            $attributes['media_metadata'] = array_merge($message->media_metadata, $attributes['media_metadata'] ?? []);
+        }
 
         if ($message->body !== null && ($attributes['body'] ?? null) === null) {
             unset($attributes['body']);
@@ -277,6 +283,7 @@ class WhatsappMessageImporter
     private function applyRemoteMutation(Message $message, array $messagePayload): void
     {
         $attributes = $this->mutationAttributes($messagePayload);
+        $reactionSnapshot = $this->reactionSnapshot($messagePayload);
         $body = $this->messageBody($messagePayload, $this->messageType($messagePayload));
 
         if (! array_key_exists('deleted_at', $attributes) && $body !== null && $body !== $message->body) {
@@ -284,6 +291,14 @@ class WhatsappMessageImporter
             $attributes['edited_at'] = $attributes['edited_at'] ?? $this->mutationTimestamp($messagePayload) ?? now();
             $attributes['remote_edit_status'] = 'accepted';
             $attributes['edit_error'] = null;
+        }
+
+        if ($reactionSnapshot !== null) {
+            $metadata = $message->media_metadata ?? [];
+            $metadata['reactions'] = $reactionSnapshot;
+            $attributes['media_metadata'] = $metadata;
+            $attributes['accepted_reaction_emoji'] = null;
+            $attributes['accepted_reaction_at'] = null;
         }
 
         if ($attributes !== []) {
@@ -342,6 +357,53 @@ class WhatsappMessageImporter
         }
 
         return $this->payloadEventContains($messagePayload, ['delete', 'deleted', 'revoke', 'revoked']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function isMutationPayload(array $messagePayload): bool
+    {
+        return $this->isDeletedPayload($messagePayload) || $this->isEditedPayload($messagePayload) || $this->isReactionPayload($messagePayload);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     */
+    private function isReactionPayload(array $messagePayload): bool
+    {
+        return $this->payloadEventContains($messagePayload, ['reaction']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $messagePayload
+     * @return array<string, string>|null
+     */
+    private function reactionSnapshot(array $messagePayload): ?array
+    {
+        if (! array_key_exists('reactions', $messagePayload) || ! is_array($messagePayload['reactions'])) {
+            return null;
+        }
+
+        $snapshot = [];
+
+        foreach ($messagePayload['reactions'] as $senderId => $reaction) {
+            if (is_array($reaction)) {
+                $senderId = $this->firstString($reaction, ['senderId', 'sender', 'from', 'author']);
+                $emoji = $this->firstString($reaction, ['emoji', 'reaction']);
+            } else {
+                $emoji = is_string($reaction) ? $reaction : null;
+                $senderId = is_string($senderId) ? $senderId : null;
+            }
+
+            if (! is_string($senderId) || trim($senderId) === '' || ! is_string($emoji) || trim($emoji) === '') {
+                continue;
+            }
+
+            $snapshot[$senderId] = $emoji;
+        }
+
+        return $snapshot;
     }
 
     /**
@@ -930,8 +992,12 @@ class WhatsappMessageImporter
         return in_array($this->baseMimeType($mimeType), self::ALLOWED_MEDIA_MIME_TYPES, true);
     }
 
-    private function shouldIncreaseUnreadCount(Conversation $conversation, ?CarbonInterface $messageTimestamp): bool
+    private function shouldIncreaseUnreadCount(Conversation $conversation, ?CarbonInterface $remoteTimestamp, ?CarbonInterface $messageTimestamp, ?CarbonInterface $hiddenAt, WhatsappMessageImportSource $source): bool
     {
+        if ($hiddenAt !== null && ($source !== WhatsappMessageImportSource::Webhook || $remoteTimestamp === null || ! $remoteTimestamp->greaterThan($hiddenAt))) {
+            return false;
+        }
+
         if ($messageTimestamp === null) {
             return true;
         }
@@ -1025,7 +1091,7 @@ class WhatsappMessageImporter
         }
 
         $chatContactPayload = $this->nestedArray($chatPayload ?? [], ['contact', '_contact', 'sender']);
-        $messageContactPayload = $this->nestedArray($messagePayload, ['sender', 'contact', '_contact']);
+        $messageContactPayload = $fromMe ? null : $this->nestedArray($messagePayload, ['sender', 'contact', '_contact']);
         $contactPayload = $chatContactPayload
             ?? $messageContactPayload
             ?? $chatPayload
@@ -1038,9 +1104,12 @@ class WhatsappMessageImporter
             ?? $chatExternalId;
         $namePayload = $fromMe ? ($chatContactPayload ?? $chatPayload ?? []) : $contactPayload;
         $contact = Contact::query()->firstOrNew(['external_id' => $contactExternalId]);
-        $attributes = [
-            'phone' => $this->firstString($contactPayload, ['phone', 'number', 'user']),
-        ];
+        $attributes = [];
+        $phone = $this->firstString($contactPayload, ['phone', 'number']);
+
+        if ($phone !== null) {
+            $attributes['phone'] = $phone;
+        }
         $name = $this->firstString($namePayload, ['name', 'shortName', 'formattedName'])
             ?? ($fromMe ? null : $this->firstString($messagePayload, ['notifyName', 'pushName']))
             ?? $this->firstString($chatPayload ?? [], ['name', 'title']);
@@ -1130,7 +1199,7 @@ class WhatsappMessageImporter
     /**
      * @param  array<string, mixed>  $messagePayload
      */
-    private function messageTimestamp(array $messagePayload): ?Carbon
+    private function remoteTimestamp(array $messagePayload): ?Carbon
     {
         foreach (['timestamp', 't', 'time', 'createdAt', 'date'] as $key) {
             $value = data_get($messagePayload, $key);
@@ -1154,5 +1223,43 @@ class WhatsappMessageImporter
         }
 
         return null;
+    }
+
+    private function shouldReactivateConversation(Conversation $conversation, ?CarbonInterface $timestamp, WhatsappMessageImportSource $source): bool
+    {
+        if ($conversation->hidden_at === null) {
+            return false;
+        }
+
+        $reason = match (true) {
+            $source !== WhatsappMessageImportSource::Webhook => 'historical_import',
+            $timestamp === null => 'missing_remote_timestamp',
+            ! $timestamp->greaterThan($conversation->hidden_at) => 'message_not_newer_than_hidden_at',
+            default => null,
+        };
+
+        if ($reason === null) {
+            return true;
+        }
+
+        Log::info('WhatsApp conversation reactivation suppressed.', [
+            'conversation_id' => $conversation->id,
+            'source' => $source->value,
+            'reason' => $reason,
+        ]);
+
+        return false;
+    }
+
+    private function reactivateConversation(Conversation $conversation, bool $shouldReactivate): void
+    {
+        if (! $shouldReactivate) {
+            return;
+        }
+
+        $conversation->forceFill([
+            'hidden_at' => null,
+            'hidden_reason' => null,
+        ])->save();
     }
 }

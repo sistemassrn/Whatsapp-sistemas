@@ -1,8 +1,59 @@
 import { Head, router, useForm, usePage } from '@inertiajs/react';
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Download, Files, MailOpen, MoreVertical, Paperclip, Pause, Pencil, Play, Search, Send, Settings, Trash2, UserRound, X, ZoomIn, ZoomOut } from 'lucide-react';
-import { type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+    FloatingFocusManager,
+    FloatingPortal,
+    autoUpdate,
+    flip,
+    offset,
+    shift,
+    useDismiss,
+    useFloating,
+    useInteractions,
+    useRole,
+} from '@floating-ui/react';
+import {
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    ChevronUp,
+    Download,
+    Files,
+    MailOpen,
+    MoreVertical,
+    Paperclip,
+    Pause,
+    Pencil,
+    Play,
+    Reply,
+    Search,
+    Send,
+    Settings,
+    Smile,
+    Trash2,
+    UserRound,
+    X,
+    ZoomIn,
+    ZoomOut,
+} from 'lucide-react';
+import {
+    type ClipboardEvent,
+    type CSSProperties,
+    type DragEvent,
+    type FormEvent,
+    type KeyboardEvent,
+    type PointerEvent,
+    type ReactNode,
+    type RefObject,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from 'react';
 import toast from 'react-hot-toast';
 import { ThemeToggle } from '../../theme';
+import EmojiPicker from '@/components/ui/EmojiPicker';
+import MessageReactionPopover from '@/components/ui/MessageReactionPopover';
 
 const MESSAGE_LIMIT_INCREMENT = 50;
 const MAX_MESSAGE_LIMIT = 300;
@@ -14,8 +65,11 @@ const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL_FILE_BYTES = 50 * 1024 * 1024;
 const INCOMING_MESSAGE_SOUND_URL = '/sounds/pop.mp3';
 const INCOMING_MESSAGE_SOUND_COOLDOWN_MS = 3000;
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+
 const CHAT_BACKGROUND_STYLE: CSSProperties = {
-    backgroundImage: "linear-gradient(var(--chat-background-overlay), var(--chat-background-overlay)), url('/img/fondochats.webp')",
+    backgroundImage:
+        "linear-gradient(var(--chat-background-overlay), var(--chat-background-overlay)), url('/img/fondochats.webp')",
     backgroundRepeat: 'repeat',
     backgroundSize: '420px auto',
 };
@@ -49,12 +103,33 @@ type ConversationItem = {
     unread_count: number;
 };
 
+type ReactionSnapshot = Record<string, string>;
+type MessageMetadata = Record<string, unknown> & {
+    reactions?: ReactionSnapshot;
+};
+
+type QuotedMessage = {
+    id: number | null;
+    external_id: string | null;
+    direction: string;
+    type: string;
+    body: string | null;
+    label: string;
+};
+
 type MessageItem = {
     id: number;
     external_id: string | null;
     direction: string;
     body: string | null;
-    type: 'text' | 'image' | 'video' | 'audio' | 'document' | 'contact' | string;
+    type:
+        | 'text'
+        | 'image'
+        | 'video'
+        | 'audio'
+        | 'document'
+        | 'contact'
+        | string;
     status: string;
     error_message: string | null;
     edited_at: string | null;
@@ -65,11 +140,15 @@ type MessageItem = {
     delete_error: string | null;
     can_edit: boolean;
     can_delete: boolean;
+    can_react: boolean;
+    quoted_message: QuotedMessage | null;
+    accepted_reaction_emoji: string | null;
+    accepted_reaction_at: string | null;
     media_url: string | null;
     media_mime_type: string | null;
     media_filename: string | null;
     media_size_bytes: number | null;
-    media_metadata: Record<string, unknown> | null;
+    media_metadata: MessageMetadata | null;
     media_download_status: string | null;
     media_error: string | null;
     sent_at: string | null;
@@ -105,7 +184,10 @@ type UploadProgress = {
     percentage?: number | null;
 };
 
-type MessageSubmitErrors = Partial<Record<'body' | 'media' | 'idempotency_key' | 'contact_id', string>> & Record<string, string>;
+type MessageSubmitErrors = Partial<
+    Record<'body' | 'media' | 'idempotency_key' | 'contact_id', string>
+> &
+    Record<string, string>;
 
 type ConnectionState = {
     status: string;
@@ -159,11 +241,26 @@ type Props = {
     };
 };
 
-const INBOX_RELOAD_PROPS = ['conversations', 'messages', 'messageLimit', 'hasMoreMessages', 'firstUnreadMessageId', 'emptyState', 'filters', 'flash', 'selectedChatId', 'maintenance'];
+const INBOX_RELOAD_PROPS = [
+    'conversations',
+    'messages',
+    'messageLimit',
+    'hasMoreMessages',
+    'firstUnreadMessageId',
+    'emptyState',
+    'filters',
+    'flash',
+    'selectedChatId',
+    'maintenance',
+];
 const CONTACTS_LOAD_ERROR = 'No se pudo cargar la agenda.';
 const requestedAvatarContactIds = new Set<number>();
 
-function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null>, active: boolean, onClose: () => void) {
+function useCloseOnOutsidePointer<T extends HTMLElement>(
+    ref: RefObject<T | null>,
+    active: boolean,
+    onClose: () => void,
+) {
     useEffect(() => {
         if (!active) {
             return;
@@ -181,14 +278,38 @@ function useCloseOnOutsidePointer<T extends HTMLElement>(ref: RefObject<T | null
 
         document.addEventListener('pointerdown', closeOnOutsidePointer, true);
 
-        return () => document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+        return () =>
+            document.removeEventListener(
+                'pointerdown',
+                closeOnOutsidePointer,
+                true,
+            );
     }, [active, onClose, ref]);
 }
 
-export default function Conversations({ operator, conversations, selectedChatId, messageLimit, hasMoreMessages, firstUnreadMessageId, messages, emptyState, filters, flash, maintenance }: Props) {
+export default function Conversations({
+    operator,
+    conversations,
+    selectedChatId,
+    messageLimit,
+    hasMoreMessages,
+    firstUnreadMessageId,
+    messages,
+    emptyState,
+    filters,
+    flash,
+    maintenance,
+}: Props) {
     const { auth } = usePage<Props>().props;
-    const selectedConversation = conversations.find((conversation) => conversation.external_id === selectedChatId) ?? null;
-    const operatorName = operator?.name ?? auth?.user?.nombre ?? auth?.user?.usuario ?? 'Operador';
+    const selectedConversation =
+        conversations.find(
+            (conversation) => conversation.external_id === selectedChatId,
+        ) ?? null;
+    const operatorName =
+        operator?.name ??
+        auth?.user?.nombre ??
+        auth?.user?.usuario ??
+        'Operador';
     const [chatSearch, setChatSearch] = useState(filters.chat_search);
     const chatSearchRef = useRef(chatSearch);
     const chatSearchHasLocalChangeRef = useRef(false);
@@ -204,7 +325,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
     const [maintenanceModalOpen, setMaintenanceModalOpen] = useState(false);
     const [agendaOpen, setAgendaOpen] = useState(false);
     const maintenanceIsRunning = maintenance.status === 'running';
-    const maintenanceIsBusy = maintenance.status === 'running' || maintenance.status === 'queued';
+    const maintenanceIsBusy =
+        maintenance.status === 'running' || maintenance.status === 'queued';
 
     useEffect(() => {
         incomingMessageSoundRef.current = new Audio(INCOMING_MESSAGE_SOUND_URL);
@@ -223,7 +345,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
             audio.muted = true;
             audio.volume = 0.01;
 
-            void audio.play()
+            void audio
+                .play()
                 .then(() => {
                     audio.pause();
                     audio.currentTime = 0;
@@ -235,7 +358,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
                 });
         };
 
-        document.addEventListener('pointerdown', warmIncomingSound, { once: true });
+        document.addEventListener('pointerdown', warmIncomingSound, {
+            once: true,
+        });
         document.addEventListener('keydown', warmIncomingSound, { once: true });
 
         return () => {
@@ -248,7 +373,11 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
     useEffect(() => {
         const incomingKeys = conversations
-            .filter((conversation) => conversation.last_message_direction === 'inbound' && conversation.last_message_at !== null)
+            .filter(
+                (conversation) =>
+                    conversation.last_message_direction === 'inbound' &&
+                    conversation.last_message_at !== null,
+            )
             .map((conversation) => incomingConversationSoundKey(conversation))
             .filter((key): key is string => key !== null);
 
@@ -259,17 +388,28 @@ export default function Conversations({ operator, conversations, selectedChatId,
             return;
         }
 
-        const newIncomingKeys = incomingKeys.filter((key) => !incomingMessageSeenKeysRef.current.has(key));
-        incomingKeys.forEach((key) => incomingMessageSeenKeysRef.current.add(key));
+        const newIncomingKeys = incomingKeys.filter(
+            (key) => !incomingMessageSeenKeysRef.current.has(key),
+        );
+        incomingKeys.forEach((key) =>
+            incomingMessageSeenKeysRef.current.add(key),
+        );
 
-        if (newIncomingKeys.length === 0 || document.visibilityState === 'visible' || document.hasFocus()) {
+        if (
+            newIncomingKeys.length === 0 ||
+            document.visibilityState === 'visible' ||
+            document.hasFocus()
+        ) {
             return;
         }
 
         const hasNewMessageAfterPageOpen = newIncomingKeys.some((key) => {
             const timestamp = Number(key.split('|')[1] ?? 0);
 
-            return Number.isFinite(timestamp) && timestamp >= incomingMessageSoundStartedAtRef.current;
+            return (
+                Number.isFinite(timestamp) &&
+                timestamp >= incomingMessageSoundStartedAtRef.current
+            );
         });
 
         if (!hasNewMessageAfterPageOpen) {
@@ -278,7 +418,10 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
         const now = Date.now();
 
-        if (now - incomingMessageSoundLastPlayedAtRef.current < INCOMING_MESSAGE_SOUND_COOLDOWN_MS) {
+        if (
+            now - incomingMessageSoundLastPlayedAtRef.current <
+            INCOMING_MESSAGE_SOUND_COOLDOWN_MS
+        ) {
             return;
         }
 
@@ -324,9 +467,13 @@ export default function Conversations({ operator, conversations, selectedChatId,
         }
 
         const timeout = window.setTimeout(() => {
-            const latestNormalizedSearch = normalizeSearch(chatSearchRef.current);
+            const latestNormalizedSearch = normalizeSearch(
+                chatSearchRef.current,
+            );
 
-            if (latestNormalizedSearch === normalizeSearch(filters.chat_search)) {
+            if (
+                latestNormalizedSearch === normalizeSearch(filters.chat_search)
+            ) {
                 return;
             }
 
@@ -366,6 +513,10 @@ export default function Conversations({ operator, conversations, selectedChatId,
         }
 
         const deselectConversation = (event: globalThis.KeyboardEvent) => {
+            if (event.defaultPrevented) {
+                return;
+            }
+
             if (event.key !== 'Escape') {
                 return;
             }
@@ -388,7 +539,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
 
         document.addEventListener('keydown', deselectConversation);
 
-        return () => document.removeEventListener('keydown', deselectConversation);
+        return () =>
+            document.removeEventListener('keydown', deselectConversation);
     }, [filters.chat_search, maintenanceModalOpen, selectedChatId]);
 
     useEffect(() => {
@@ -425,7 +577,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
     }
 
     function openConversation(chatId: string) {
-        const conversationListScrollTop = conversationListRef.current?.scrollTop ?? 0;
+        const conversationListScrollTop =
+            conversationListRef.current?.scrollTop ?? 0;
 
         router.get(
             '/whatsapp/conversations',
@@ -441,7 +594,8 @@ export default function Conversations({ operator, conversations, selectedChatId,
                 onFinish: () => {
                     window.requestAnimationFrame(() => {
                         if (conversationListRef.current) {
-                            conversationListRef.current.scrollTop = conversationListScrollTop;
+                            conversationListRef.current.scrollTop =
+                                conversationListScrollTop;
                         }
                     });
                 },
@@ -460,7 +614,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
                         <div className="app-surface border-b p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div>
-                                    <h1 className="text-xl font-semibold">Chats</h1>
+                                    <h1 className="text-xl font-semibold">
+                                        Chats
+                                    </h1>
                                     <p className="app-faint mt-1 text-xs">
                                         {operatorName}
                                     </p>
@@ -478,7 +634,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => setMaintenanceModalOpen(true)}
+                                        onClick={() =>
+                                            setMaintenanceModalOpen(true)
+                                        }
                                         className="app-button grid size-9 place-items-center rounded-lg border transition"
                                         aria-label="Abrir mantenimiento"
                                     >
@@ -509,17 +667,24 @@ export default function Conversations({ operator, conversations, selectedChatId,
                             </div> */}
                         </div>
 
-                        <div ref={conversationListRef} className="min-h-0 flex-1 overflow-y-auto">
+                        <div
+                            ref={conversationListRef}
+                            className="min-h-0 flex-1 overflow-y-auto"
+                        >
                             {conversations.length === 0 ? (
                                 <p className="app-muted p-4 text-sm leading-6">
-                                    {emptyState ?? 'No hay conversaciones para mostrar todavía.'}
+                                    {emptyState ??
+                                        'No hay conversaciones para mostrar todavía.'}
                                 </p>
                             ) : (
                                 conversations.map((conversation) => (
                                     <ConversationRow
                                         key={conversation.id}
                                         conversation={conversation}
-                                        active={selectedChatId === conversation.external_id}
+                                        active={
+                                            selectedChatId ===
+                                            conversation.external_id
+                                        }
                                         filters={filters}
                                         onSelect={openConversation}
                                     />
@@ -528,7 +693,10 @@ export default function Conversations({ operator, conversations, selectedChatId,
                         </div>
                     </aside>
 
-                    <section className="app-chat-shell hidden min-w-0 flex-1 flex-col md:flex" style={CHAT_BACKGROUND_STYLE}>
+                    <section
+                        className="app-chat-shell hidden min-w-0 flex-1 flex-col md:flex"
+                        style={CHAT_BACKGROUND_STYLE}
+                    >
                         {selectedConversation ? (
                             <MessagePanel
                                 conversation={selectedConversation}
@@ -570,7 +738,9 @@ export default function Conversations({ operator, conversations, selectedChatId,
 function AgendaModal({ onClose }: { onClose: () => void }) {
     const modalRef = useRef<HTMLDivElement>(null);
     const [search, setSearch] = useState('');
-    const [openingContactId, setOpeningContactId] = useState<number | null>(null);
+    const [openingContactId, setOpeningContactId] = useState<number | null>(
+        null,
+    );
     const { contacts, loading, error } = useContactsSearch(search);
 
     useCloseOnOutsidePointer(modalRef, true, onClose);
@@ -583,21 +753,33 @@ function AgendaModal({ onClose }: { onClose: () => void }) {
 
         setOpeningContactId(contact.id);
 
-        router.post(`/whatsapp/contacts/${contact.id}/open-conversation`, {}, {
-            preserveScroll: true,
-            onSuccess: onClose,
-            onFinish: () => setOpeningContactId(null),
-        });
+        router.post(
+            `/whatsapp/contacts/${contact.id}/open-conversation`,
+            {},
+            {
+                preserveScroll: true,
+                onSuccess: onClose,
+                onFinish: () => setOpeningContactId(null),
+            },
+        );
     };
 
     return (
-        <ContactModalFrame modalRef={modalRef} title="Agenda" titleId="agenda-title" closeLabel="Cerrar agenda" onClose={onClose}>
+        <ContactModalFrame
+            modalRef={modalRef}
+            title="Agenda"
+            titleId="agenda-title"
+            closeLabel="Cerrar agenda"
+            onClose={onClose}
+        >
             <ContactSearchInput search={search} onSearchChange={setSearch} />
             <ContactList
                 contacts={contacts}
                 loading={loading}
                 error={error}
-                actionLabel={(contact) => openingContactId === contact.id ? 'Abriendo…' : null}
+                actionLabel={(contact) =>
+                    openingContactId === contact.id ? 'Abriendo…' : null
+                }
                 disabled={() => openingContactId !== null}
                 disabledClassName="disabled:cursor-wait disabled:opacity-70"
                 onSelect={openContact}
@@ -606,7 +788,15 @@ function AgendaModal({ onClose }: { onClose: () => void }) {
     );
 }
 
-function ContactSelectorModal({ sendingContactId, onClose, onSelect }: { sendingContactId: number | null; onClose: () => void; onSelect: (contact: AgendaContact) => void }) {
+function ContactSelectorModal({
+    sendingContactId,
+    onClose,
+    onSelect,
+}: {
+    sendingContactId: number | null;
+    onClose: () => void;
+    onSelect: (contact: AgendaContact) => void;
+}) {
     const modalRef = useRef<HTMLDivElement>(null);
     const [search, setSearch] = useState('');
     const { contacts, loading, error } = useContactsSearch(search);
@@ -615,23 +805,44 @@ function ContactSelectorModal({ sendingContactId, onClose, onSelect }: { sending
     useEscapeClose(onClose);
 
     return (
-        <ContactModalFrame modalRef={modalRef} title="Enviar contacto" titleId="contact-selector-title" description="Elegí un único contacto para compartir en este chat." closeLabel="Cerrar selector de contactos" onClose={onClose}>
+        <ContactModalFrame
+            modalRef={modalRef}
+            title="Enviar contacto"
+            titleId="contact-selector-title"
+            description="Elegí un único contacto para compartir en este chat."
+            closeLabel="Cerrar selector de contactos"
+            onClose={onClose}
+        >
             <ContactSearchInput search={search} onSearchChange={setSearch} />
             <ContactList
                 contacts={contacts}
                 loading={loading}
                 error={error}
-                actionLabel={(contact) => sendingContactId === contact.id ? 'Enviando…' : null}
-                disabled={(contact) => sendingContactId !== null || !contact.usable_phone}
+                actionLabel={(contact) =>
+                    sendingContactId === contact.id ? 'Enviando…' : null
+                }
+                disabled={(contact) =>
+                    sendingContactId !== null || !contact.usable_phone
+                }
                 disabledClassName="disabled:cursor-not-allowed disabled:opacity-60"
-                footer={(contact) => !contact.usable_phone ? <span className="mt-0.5 block truncate text-xs text-(--app-danger)">Sin teléfono</span> : null}
+                footer={(contact) =>
+                    !contact.usable_phone ? (
+                        <span className="mt-0.5 block truncate text-xs text-(--app-danger)">
+                            Sin teléfono
+                        </span>
+                    ) : null
+                }
                 onSelect={onSelect}
             />
         </ContactModalFrame>
     );
 }
 
-function useContactsSearch(search: string): { contacts: AgendaContact[]; loading: boolean; error: string | null } {
+function useContactsSearch(search: string): {
+    contacts: AgendaContact[];
+    loading: boolean;
+    error: string | null;
+} {
     const [contacts, setContacts] = useState<AgendaContact[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -649,20 +860,32 @@ function useContactsSearch(search: string): { contacts: AgendaContact[]; loading
                 query.set('search', normalizedSearch);
             }
 
-            void fetch(`/whatsapp/contacts${query.toString() ? `?${query.toString()}` : ''}`, {
-                headers: { Accept: 'application/json' },
-                signal: abortController.signal,
-            })
+            void fetch(
+                `/whatsapp/contacts${query.toString() ? `?${query.toString()}` : ''}`,
+                {
+                    headers: { Accept: 'application/json' },
+                    signal: abortController.signal,
+                },
+            )
                 .then((response) => {
                     if (!response.ok) {
                         throw new Error(CONTACTS_LOAD_ERROR);
                     }
 
-                    return response.json() as Promise<{ contacts?: AgendaContact[] }>;
+                    return response.json() as Promise<{
+                        contacts?: AgendaContact[];
+                    }>;
                 })
-                .then((payload) => setContacts(Array.isArray(payload.contacts) ? payload.contacts : []))
+                .then((payload) =>
+                    setContacts(
+                        Array.isArray(payload.contacts) ? payload.contacts : [],
+                    ),
+                )
                 .catch((fetchError: unknown) => {
-                    if (fetchError instanceof DOMException && fetchError.name === 'AbortError') {
+                    if (
+                        fetchError instanceof DOMException &&
+                        fetchError.name === 'AbortError'
+                    ) {
                         return;
                     }
 
@@ -702,16 +925,52 @@ function useEscapeClose(onClose: () => void) {
     }, [onClose]);
 }
 
-function ContactModalFrame({ modalRef, title, titleId, description, closeLabel, onClose, children }: { modalRef: RefObject<HTMLDivElement | null>; title: string; titleId: string; description?: string; closeLabel: string; onClose: () => void; children: ReactNode }) {
+function ContactModalFrame({
+    modalRef,
+    title,
+    titleId,
+    description,
+    closeLabel,
+    onClose,
+    children,
+}: {
+    modalRef: RefObject<HTMLDivElement | null>;
+    title: string;
+    titleId: string;
+    description?: string;
+    closeLabel: string;
+    onClose: () => void;
+    children: ReactNode;
+}) {
     return (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4" role="presentation">
-            <section ref={modalRef} className="app-surface flex max-h-[85vh] w-full max-w-lg flex-col rounded-3xl border p-5 shadow-2xl shadow-black/30" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <div
+            className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4"
+            role="presentation"
+        >
+            <section
+                ref={modalRef}
+                className="app-surface flex max-h-[85vh] w-full max-w-lg flex-col rounded-3xl border p-5 shadow-2xl shadow-black/30"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby={titleId}
+            >
                 <header className="flex items-start justify-between gap-4">
                     <div>
-                        <h2 id={titleId} className="text-lg font-semibold">{title}</h2>
-                        {description ? <p className="app-muted mt-1 text-sm">{description}</p> : null}
+                        <h2 id={titleId} className="text-lg font-semibold">
+                            {title}
+                        </h2>
+                        {description ? (
+                            <p className="app-muted mt-1 text-sm">
+                                {description}
+                            </p>
+                        ) : null}
                     </div>
-                    <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label={closeLabel}>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="app-button-secondary grid size-9 place-items-center rounded-full transition"
+                        aria-label={closeLabel}
+                    >
                         <X className="size-4" />
                     </button>
                 </header>
@@ -721,7 +980,13 @@ function ContactModalFrame({ modalRef, title, titleId, description, closeLabel, 
     );
 }
 
-function ContactSearchInput({ search, onSearchChange }: { search: string; onSearchChange: (value: string) => void }) {
+function ContactSearchInput({
+    search,
+    onSearchChange,
+}: {
+    search: string;
+    onSearchChange: (value: string) => void;
+}) {
     return (
         <SearchForm
             placeholder="Buscar por nombre o teléfono"
@@ -734,13 +999,48 @@ function ContactSearchInput({ search, onSearchChange }: { search: string; onSear
     );
 }
 
-function ContactList({ contacts, loading, error, actionLabel, disabled, disabledClassName, footer, onSelect }: { contacts: AgendaContact[]; loading: boolean; error: string | null; actionLabel: (contact: AgendaContact) => string | null; disabled: (contact: AgendaContact) => boolean; disabledClassName: string; footer?: (contact: AgendaContact) => ReactNode; onSelect: (contact: AgendaContact) => void }) {
+function ContactList({
+    contacts,
+    loading,
+    error,
+    actionLabel,
+    disabled,
+    disabledClassName,
+    footer,
+    onSelect,
+}: {
+    contacts: AgendaContact[];
+    loading: boolean;
+    error: string | null;
+    actionLabel: (contact: AgendaContact) => string | null;
+    disabled: (contact: AgendaContact) => boolean;
+    disabledClassName: string;
+    footer?: (contact: AgendaContact) => ReactNode;
+    onSelect: (contact: AgendaContact) => void;
+}) {
     return (
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-(--app-border)" aria-busy={loading}>
-            {error ? <p className="app-alert-danger m-3 rounded-xl border p-3 text-sm">{error}</p> : null}
-            {loading && contacts.length === 0 ? <p className="app-muted p-4 text-sm">Cargando contactos…</p> : null}
-            {loading && contacts.length > 0 ? <p className="app-faint px-4 py-2 text-xs">Actualizando agenda…</p> : null}
-            {!loading && contacts.length === 0 && !error ? <p className="app-muted p-4 text-sm">No encontramos contactos.</p> : null}
+        <div
+            className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-2xl border border-(--app-border)"
+            aria-busy={loading}
+        >
+            {error ? (
+                <p className="app-alert-danger m-3 rounded-xl border p-3 text-sm">
+                    {error}
+                </p>
+            ) : null}
+            {loading && contacts.length === 0 ? (
+                <p className="app-muted p-4 text-sm">Cargando contactos…</p>
+            ) : null}
+            {loading && contacts.length > 0 ? (
+                <p className="app-faint px-4 py-2 text-xs">
+                    Actualizando agenda…
+                </p>
+            ) : null}
+            {!loading && contacts.length === 0 && !error ? (
+                <p className="app-muted p-4 text-sm">
+                    No encontramos contactos.
+                </p>
+            ) : null}
             {contacts.map((contact) => (
                 <button
                     key={contact.id}
@@ -751,11 +1051,21 @@ function ContactList({ contacts, loading, error, actionLabel, disabled, disabled
                 >
                     <ContactAvatar contact={contact} />
                     <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-semibold">{contact.display_name}</span>
-                        {contact.secondary_label ? <span className="app-muted mt-0.5 block truncate text-xs">{contact.secondary_label}</span> : null}
+                        <span className="block truncate text-sm font-semibold">
+                            {contact.display_name}
+                        </span>
+                        {contact.secondary_label ? (
+                            <span className="app-muted mt-0.5 block truncate text-xs">
+                                {contact.secondary_label}
+                            </span>
+                        ) : null}
                         {footer?.(contact)}
                     </span>
-                    {actionLabel(contact) ? <span className="app-faint text-xs">{actionLabel(contact)}</span> : null}
+                    {actionLabel(contact) ? (
+                        <span className="app-faint text-xs">
+                            {actionLabel(contact)}
+                        </span>
+                    ) : null}
                 </button>
             ))}
         </div>
@@ -764,7 +1074,14 @@ function ContactList({ contacts, loading, error, actionLabel, disabled, disabled
 
 function ContactAvatar({ contact }: { contact: AgendaContact }) {
     if (contact.avatar_url) {
-        return <img src={contact.avatar_url} alt={`Foto de perfil de ${contact.display_name}`} className="size-10 rounded-full border border-(--app-border) object-cover" loading="lazy" />;
+        return (
+            <img
+                src={contact.avatar_url}
+                alt={`Foto de perfil de ${contact.display_name}`}
+                className="size-10 rounded-full border border-(--app-border) object-cover"
+                loading="lazy"
+            />
+        );
     }
 
     return (
@@ -817,48 +1134,105 @@ function MaintenanceModal({
     }, [onClose]);
 
     return (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4" role="presentation">
-            <section ref={modalRef} className="app-surface w-full max-w-lg rounded-3xl border p-5 shadow-2xl shadow-black/30" role="dialog" aria-modal="true" aria-labelledby="maintenance-title">
+        <div
+            className="fixed inset-0 z-40 flex items-center justify-center bg-black/45 p-4"
+            role="presentation"
+        >
+            <section
+                ref={modalRef}
+                className="app-surface w-full max-w-lg rounded-3xl border p-5 shadow-2xl shadow-black/30"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="maintenance-title"
+            >
                 <header className="flex items-start justify-between gap-4">
                     <div>
-                        <h2 id="maintenance-title" className="text-lg font-semibold">Sincronización</h2>
+                        <h2
+                            id="maintenance-title"
+                            className="text-lg font-semibold"
+                        >
+                            Sincronización
+                        </h2>
                     </div>
-                    <button type="button" onClick={onClose} className="app-button-secondary grid size-9 place-items-center rounded-full transition" aria-label="Cerrar sincronización">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="app-button-secondary grid size-9 place-items-center rounded-full transition"
+                        aria-label="Cerrar sincronización"
+                    >
                         <X className="size-4" />
                     </button>
                 </header>
 
                 <div className="mt-5 space-y-2 rounded-2xl border border-(--app-border) bg-(--app-surface-soft) p-4 text-sm leading-6">
-                    <p className={isRunning ? 'font-medium text-green-600 dark:text-green-300' : 'font-medium'}>{maintenanceStatusDescription(maintenance)}</p>
+                    <p
+                        className={
+                            isRunning
+                                ? 'font-medium text-green-600 dark:text-green-300'
+                                : 'font-medium'
+                        }
+                    >
+                        {maintenanceStatusDescription(maintenance)}
+                    </p>
                     <p>{maintenance.scheduler}</p>
                     <p>Tipo: {maintenanceReasonLabel(maintenance.reason)}</p>
                     {/* <p>{maintenance.requested_at ? `Solicitado el ${formatMaintenanceDateTime(maintenance.requested_at)}` : 'Todavía no hay fecha de solicitud registrada.'}</p> */}
-                    <p>{maintenance.started_at ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}` : 'Todavía no hay fecha de inicio registrada.'}</p>
-                    <p>{maintenance.finished_at ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}` : 'Todavía no hay fecha de finalización registrada.'}</p>
-                    <p>{maintenance.duration_seconds !== null ? `Duración: ${formatDuration(maintenance.duration_seconds)}` : 'Duración pendiente.'}</p>
+                    <p>
+                        {maintenance.started_at
+                            ? `Comenzó el ${formatMaintenanceDateTime(maintenance.started_at)}`
+                            : 'Todavía no hay fecha de inicio registrada.'}
+                    </p>
+                    <p>
+                        {maintenance.finished_at
+                            ? `Finalizó el ${formatMaintenanceDateTime(maintenance.finished_at)}`
+                            : 'Todavía no hay fecha de finalización registrada.'}
+                    </p>
+                    <p>
+                        {maintenance.duration_seconds !== null
+                            ? `Duración: ${formatDuration(maintenance.duration_seconds)}`
+                            : 'Duración pendiente.'}
+                    </p>
                     {/* <p className="app-muted">La recuperación de mutimedia cubre las últimas {maintenance.retry_media_window_hours} h y respeta un cooldown de {maintenance.retry_media_cooldown_hours} h por mensaje.</p> */}
                 </div>
 
                 {maintenance.error ? (
                     <div className="mt-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-700 dark:text-red-200">
                         <p className="font-semibold">Último error</p>
-                        <p className="mt-1 max-h-28 overflow-auto whitespace-pre-wrap leading-5">{maintenance.error}</p>
+                        <p className="mt-1 max-h-28 overflow-auto leading-5 whitespace-pre-wrap">
+                            {maintenance.error}
+                        </p>
                     </div>
                 ) : null}
 
                 <div className="mt-5 grid gap-2 sm:grid-cols-3">
                     <form onSubmit={onSync}>
-                        <button type="submit" disabled={syncing || isBusy} className="app-button-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
-                            {maintenance.status === 'queued' ? 'Esperando...' : isRunning ? 'Sincronizando...' : 'Sincronizar'}
+                        <button
+                            type="submit"
+                            disabled={syncing || isBusy}
+                            className="app-button-primary w-full rounded-xl px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                            {maintenance.status === 'queued'
+                                ? 'Esperando...'
+                                : isRunning
+                                  ? 'Sincronizando...'
+                                  : 'Sincronizar'}
                         </button>
                     </form>
                     <form onSubmit={onDisconnect}>
-                        <button type="submit" disabled={disconnecting} className="app-button w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                        <button
+                            type="submit"
+                            disabled={disconnecting}
+                            className="app-button w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
+                        >
                             Cambiar cuenta
                         </button>
                     </form>
                     <form onSubmit={onLogout}>
-                        <button type="submit" disabled={loggingOut} className="app-button-danger w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60">
+                        <button
+                            type="submit"
+                            disabled={loggingOut}
+                            className="app-button-danger w-full rounded-xl border px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60"
+                        >
                             Cerrar sesión
                         </button>
                     </form>
@@ -868,12 +1242,25 @@ function MaintenanceModal({
     );
 }
 
-function ConversationRow({ conversation, active, filters, onSelect }: { conversation: ConversationItem; active: boolean; filters: Props['filters']; onSelect: (chatId: string) => void }) {
+function ConversationRow({
+    conversation,
+    active,
+    filters,
+    onSelect,
+}: {
+    conversation: ConversationItem;
+    active: boolean;
+    filters: Props['filters'];
+    onSelect: (chatId: string) => void;
+}) {
     const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
-    const [avatarPreview, setAvatarPreview] = useState<ImagePreview | null>(null);
+    const [avatarPreview, setAvatarPreview] = useState<ImagePreview | null>(
+        null,
+    );
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
-    const hasUnread = conversation.unread_count > 0 || conversation.marked_unread_at !== null;
+    const hasUnread =
+        conversation.unread_count > 0 || conversation.marked_unread_at !== null;
     const title = conversationTitle(conversation);
 
     useCloseOnOutsidePointer(menuRef, menuOpen, () => setMenuOpen(false));
@@ -883,7 +1270,11 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
     }, [conversation.avatar_url]);
 
     useEffect(() => {
-        if (conversation.contact_id === null || avatarUrl || requestedAvatarContactIds.has(conversation.contact_id)) {
+        if (
+            conversation.contact_id === null ||
+            avatarUrl ||
+            requestedAvatarContactIds.has(conversation.contact_id)
+        ) {
             return;
         }
 
@@ -898,9 +1289,15 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
             },
             body: JSON.stringify({}),
         })
-            .then((response) => response.json() as Promise<{ avatar_url?: unknown }>)
+            .then(
+                (response) =>
+                    response.json() as Promise<{ avatar_url?: unknown }>,
+            )
             .then((payload) => {
-                if (typeof payload.avatar_url === 'string' && payload.avatar_url !== '') {
+                if (
+                    typeof payload.avatar_url === 'string' &&
+                    payload.avatar_url !== ''
+                ) {
                     setAvatarUrl(payload.avatar_url);
                 }
             })
@@ -929,10 +1326,18 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
         toast.custom(
             (toastInstance) => (
                 <div className="app-menu w-80 rounded-2xl border p-4 text-sm shadow-2xl shadow-black/30">
-                    <p className="font-semibold text-(--app-text)">¿Eliminar chat?</p>
-                    <p className="app-muted mt-1 leading-5">Solo se elimina de esta app. No borra WhatsApp.</p>
+                    <p className="font-semibold text-(--app-text)">
+                        ¿Eliminar chat?
+                    </p>
+                    <p className="app-muted mt-1 leading-5">
+                        Solo se elimina de esta app. No borra WhatsApp.
+                    </p>
                     <div className="mt-4 flex justify-end gap-2">
-                        <button type="button" onClick={() => toast.dismiss(toastInstance.id)} className="app-button-secondary rounded-full px-3 py-1.5 text-xs font-semibold">
+                        <button
+                            type="button"
+                            onClick={() => toast.dismiss(toastInstance.id)}
+                            className="app-button-secondary rounded-full px-3 py-1.5 text-xs font-semibold"
+                        >
                             Cancelar
                         </button>
                         <button
@@ -962,18 +1367,31 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
     };
 
     return (
-        <div className={`relative border-b border-(--app-border) transition-all ${active ? 'm-1 rounded-2xl bg-(--app-surface-strong)' : 'm-1 bg-(--app-surface) hover:rounded-2xl hover:bg-(--app-surface-strong)'}`}>
+        <div
+            className={`relative border-b border-(--app-border) transition-all ${active ? 'm-1 rounded-2xl bg-(--app-surface-strong)' : 'm-1 bg-(--app-surface) hover:rounded-2xl hover:bg-(--app-surface-strong)'}`}
+        >
             <div className="flex gap-3 px-4 py-3">
                 <div className="shrink-0">
                     {avatarUrl ? (
                         <button
                             type="button"
-                            onClick={() => setAvatarPreview({ id: conversation.id, url: avatarUrl, filename: `Foto de perfil de ${title}` })}
+                            onClick={() =>
+                                setAvatarPreview({
+                                    id: conversation.id,
+                                    url: avatarUrl,
+                                    filename: `Foto de perfil de ${title}`,
+                                })
+                            }
                             className="app-focus-ring block rounded-full"
                             title={`Ver foto de perfil de ${title}`}
                             aria-label={`Ver foto de perfil de ${title}`}
                         >
-                            <img src={avatarUrl} alt={`Foto de perfil de ${title}`} className="size-11 rounded-full border border-(--app-border) object-cover" loading="lazy" />
+                            <img
+                                src={avatarUrl}
+                                alt={`Foto de perfil de ${title}`}
+                                className="size-11 rounded-full border border-(--app-border) object-cover"
+                                loading="lazy"
+                            />
                         </button>
                     ) : (
                         <div className="flex size-11 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) text-sm font-semibold text-(--app-text)">
@@ -991,8 +1409,14 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
                     className="min-w-0 flex-1 pr-14 outline-none focus:outline-none"
                 >
                     <div className="flex items-start justify-between gap-3">
-                        <p className="truncate text-sm font-semibold">{title}</p>
-                        <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">{formatConversationTimestamp(conversation.last_message_at)}</time>
+                        <p className="truncate text-sm font-semibold">
+                            {title}
+                        </p>
+                        <time className="app-faint absolute top-3 right-3 shrink-0 text-[11px]">
+                            {formatConversationTimestamp(
+                                conversation.last_message_at,
+                            )}
+                        </time>
                     </div>
 
                     {/* {conversation.display_description ? (
@@ -1002,8 +1426,12 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
                     ) : null} */}
 
                     <p className="app-muted mt-1 truncate text-sm">
-                        {conversation.last_message_direction === 'outbound' ? 'Vos: ' : ''}
-                        {conversation.last_message_preview ?? conversation.last_message_body ?? 'Sin vista previa'}
+                        {conversation.last_message_direction === 'outbound'
+                            ? 'Vos: '
+                            : ''}
+                        {conversation.last_message_preview ??
+                            conversation.last_message_body ??
+                            'Sin vista previa'}
                     </p>
                 </a>
             </div>
@@ -1022,12 +1450,25 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
                         <MoreVertical className="size-4" />
                     </button>
                     {menuOpen ? (
-                        <div className="app-menu absolute right-0 z-20 mt-2 w-48 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
-                            <button type="button" onClick={markConversationUnread} className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left" role="menuitem">
+                        <div
+                            className="app-menu absolute right-0 z-20 mt-2 w-48 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30"
+                            role="menu"
+                        >
+                            <button
+                                type="button"
+                                onClick={markConversationUnread}
+                                className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left"
+                                role="menuitem"
+                            >
                                 <MailOpen className="size-4 text-(--app-accent)" />
                                 <span>Marcar no leído</span>
                             </button>
-                            <button type="button" onClick={hideConversation} className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left" role="menuitem">
+                            <button
+                                type="button"
+                                onClick={hideConversation}
+                                className="app-menu-item flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left"
+                                role="menuitem"
+                            >
                                 <Trash2 className="size-4 text-red-400" />
                                 <span>Eliminar chat</span>
                             </button>
@@ -1051,7 +1492,12 @@ function ConversationRow({ conversation, active, filters, onSelect }: { conversa
 
 function UnreadBadge({ hasUnread }: { hasUnread: boolean }) {
     if (hasUnread) {
-        return <span className="size-2.5 shrink-0 rounded-full bg-(--app-accent)" aria-label="Mensajes no leídos" />;
+        return (
+            <span
+                className="size-2.5 shrink-0 rounded-full bg-(--app-accent)"
+                aria-label="Mensajes no leídos"
+            />
+        );
     }
 
     return null;
@@ -1086,11 +1532,20 @@ function MessagePanel({
     const [imagePreview, setImagePreview] = useState<ImagePreview | null>(null);
     const [isDraggingFiles, setIsDraggingFiles] = useState(false);
     const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+    const [composerEmojiPickerOpen, setComposerEmojiPickerOpen] =
+        useState(false);
     const [contactSelectorOpen, setContactSelectorOpen] = useState(false);
-    const [sendingContactId, setSendingContactId] = useState<number | null>(null);
+    const [sendingContactId, setSendingContactId] = useState<number | null>(
+        null,
+    );
+    const [replyTarget, setReplyTarget] = useState<MessageItem | null>(null);
+    const activeConversationIdRef = useRef(conversation.external_id);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const attachmentMenuRef = useRef<HTMLDivElement>(null);
+    const composerEmojiPickerRef = useRef<HTMLDivElement>(null);
+    const composerEmojiTriggerRef = useRef<HTMLButtonElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const composerSelectionRef = useRef({ start: 0, end: 0 });
     const composerBodyRef = useRef('');
     const composerMediaRef = useRef<File[]>([]);
     const [sendProgress, setSendProgress] = useState<number | null>(null);
@@ -1104,18 +1559,51 @@ function MessagePanel({
         idempotency_key: generateIdempotencyKey(),
     });
 
-    useCloseOnOutsidePointer(attachmentMenuRef, attachmentMenuOpen, () => setAttachmentMenuOpen(false));
+    useCloseOnOutsidePointer(attachmentMenuRef, attachmentMenuOpen, () =>
+        setAttachmentMenuOpen(false),
+    );
+    useCloseOnOutsidePointer(
+        composerEmojiPickerRef,
+        composerEmojiPickerOpen,
+        () => setComposerEmojiPickerOpen(false),
+    );
+
+    useEffect(() => {
+        if (!composerEmojiPickerOpen) {
+            return;
+        }
+
+        const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+            if (event.key !== 'Escape') {
+                return;
+            }
+
+            event.preventDefault();
+            setComposerEmojiPickerOpen(false);
+            composerEmojiTriggerRef.current?.focus();
+        };
+
+        document.addEventListener('keydown', closeOnEscape);
+
+        return () => document.removeEventListener('keydown', closeOnEscape);
+    }, [composerEmojiPickerOpen]);
 
     useEffect(() => {
         composerBodyRef.current = data.body;
         composerMediaRef.current = data.media;
     }, [data.body, data.media]);
 
+    useLayoutEffect(() => {
+        activeConversationIdRef.current = conversation.external_id;
+    }, [conversation.external_id]);
+
     useEffect(() => {
         setMessageSearch('');
         setActiveMatchIndex(0);
         setAttachmentMenuOpen(false);
+        setComposerEmojiPickerOpen(false);
         setContactSelectorOpen(false);
+        setReplyTarget(null);
     }, [conversation.external_id]);
 
     const normalizedMessageSearch = messageSearch.trim().toLocaleLowerCase();
@@ -1125,15 +1613,24 @@ function MessagePanel({
         }
 
         return messages
-            .filter((message) => (message.body ?? '').toLocaleLowerCase().includes(normalizedMessageSearch))
+            .filter((message) =>
+                (message.body ?? '')
+                    .toLocaleLowerCase()
+                    .includes(normalizedMessageSearch),
+            )
             .map((message) => message.id);
     }, [messages, normalizedMessageSearch]);
 
     useLayoutEffect(() => {
-        setActiveMatchIndex(searchMatches.length > 0 ? searchMatches.length - 1 : 0);
+        setActiveMatchIndex(
+            searchMatches.length > 0 ? searchMatches.length - 1 : 0,
+        );
     }, [searchMatches]);
 
-    const activeMatchPosition = searchMatches.length === 0 ? 0 : Math.min(activeMatchIndex, searchMatches.length - 1);
+    const activeMatchPosition =
+        searchMatches.length === 0
+            ? 0
+            : Math.min(activeMatchIndex, searchMatches.length - 1);
 
     useEffect(() => {
         if (searchMatches.length === 0) {
@@ -1157,20 +1654,31 @@ function MessagePanel({
 
         textarea.style.height = 'auto';
         textarea.style.height = `${Math.min(textarea.scrollHeight, COMPOSER_TEXTAREA_MAX_HEIGHT)}px`;
-        textarea.style.overflowY = textarea.scrollHeight > COMPOSER_TEXTAREA_MAX_HEIGHT ? 'auto' : 'hidden';
+        textarea.style.overflowY =
+            textarea.scrollHeight > COMPOSER_TEXTAREA_MAX_HEIGHT
+                ? 'auto'
+                : 'hidden';
     }, [data.body]);
 
-    const latestMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-    const latestMessageKey = latestMessage ? `${latestMessage.id}:${latestMessage.sent_at ?? latestMessage.received_at ?? latestMessage.created_at}` : null;
+    const latestMessage =
+        messages.length > 0 ? messages[messages.length - 1] : null;
+    const latestMessageKey = latestMessage
+        ? `${latestMessage.id}:${latestMessage.sent_at ?? latestMessage.received_at ?? latestMessage.created_at}`
+        : null;
     const messageRenderItems = useMemo(
         () => groupedMessageRenderItems(messages, firstUnreadMessageId),
         [firstUnreadMessageId, messages],
     );
     const imageGallery = useMemo(
-        () => imagePreview ? contiguousImageGallery(messages, imagePreview.id) : [],
+        () =>
+            imagePreview
+                ? contiguousImageGallery(messages, imagePreview.id)
+                : [],
         [imagePreview, messages],
     );
-    const activeImageIndex = imagePreview ? imageGallery.findIndex((image) => image.id === imagePreview.id) : -1;
+    const activeImageIndex = imagePreview
+        ? imageGallery.findIndex((image) => image.id === imagePreview.id)
+        : -1;
 
     useLayoutEffect(() => {
         const scrollContainer = scrollContainerRef.current;
@@ -1179,11 +1687,16 @@ function MessagePanel({
             return;
         }
 
-        const chatChanged = previousChatIdRef.current !== conversation.external_id;
-        const latestMessageChanged = previousLatestMessageKeyRef.current !== latestMessageKey;
+        const chatChanged =
+            previousChatIdRef.current !== conversation.external_id;
+        const latestMessageChanged =
+            previousLatestMessageKeyRef.current !== latestMessageKey;
 
         if (isLoadingOlderRef.current) {
-            scrollContainer.scrollTop = scrollContainer.scrollHeight - previousScrollHeightRef.current + previousScrollTopRef.current;
+            scrollContainer.scrollTop =
+                scrollContainer.scrollHeight -
+                previousScrollHeightRef.current +
+                previousScrollTopRef.current;
             isLoadingOlderRef.current = false;
             keepScrolledToBottomRef.current = false;
             setIsLoadingOlder(false);
@@ -1213,7 +1726,10 @@ function MessagePanel({
             {
                 chat: conversation.external_id,
                 chat_search: filters.chat_search,
-                message_limit: Math.min(messageLimit + MESSAGE_LIMIT_INCREMENT, MAX_MESSAGE_LIMIT),
+                message_limit: Math.min(
+                    messageLimit + MESSAGE_LIMIT_INCREMENT,
+                    MAX_MESSAGE_LIMIT,
+                ),
             },
             {
                 only: INBOX_RELOAD_PROPS,
@@ -1235,7 +1751,10 @@ function MessagePanel({
             return;
         }
 
-        const distanceFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
+        const distanceFromBottom =
+            scrollContainer.scrollHeight -
+            scrollContainer.scrollTop -
+            scrollContainer.clientHeight;
 
         if (distanceFromBottom > 80) {
             keepScrolledToBottomRef.current = false;
@@ -1249,13 +1768,22 @@ function MessagePanel({
     const keepMessagesAtBottom = () => {
         const scrollContainer = scrollContainerRef.current;
 
-        if (!scrollContainer || isLoadingOlderRef.current || !keepScrolledToBottomRef.current) {
+        if (
+            !scrollContainer ||
+            isLoadingOlderRef.current ||
+            !keepScrolledToBottomRef.current
+        ) {
             return;
         }
 
         window.requestAnimationFrame(() => {
-            if (scrollContainerRef.current && keepScrolledToBottomRef.current && !isLoadingOlderRef.current) {
-                scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+            if (
+                scrollContainerRef.current &&
+                keepScrolledToBottomRef.current &&
+                !isLoadingOlderRef.current
+            ) {
+                scrollContainerRef.current.scrollTop =
+                    scrollContainerRef.current.scrollHeight;
             }
         });
     };
@@ -1270,6 +1798,7 @@ function MessagePanel({
         const submittedBody = data.body;
         const submittedMedia = data.media;
         const submittedKey = data.idempotency_key;
+        const submittedReplyTarget = replyTarget;
 
         if (submittedBody.trim() === '' && submittedMedia.length === 0) {
             return;
@@ -1289,42 +1818,62 @@ function MessagePanel({
             fileInputRef.current.value = '';
         }
 
-        router.post(`/whatsapp/conversations/${conversation.id}/messages`, {
-            body: submittedBody,
-            media: submittedMedia,
-            idempotency_key: submittedKey,
-        }, {
-            async: true,
-            forceFormData: true,
-            preserveScroll: true,
-            onProgress: (progress: UploadProgress) => {
-                if (submittedMedia.length === 0) {
-                    return;
-                }
-
-                setSendProgress(progress?.percentage ?? null);
+        router.post(
+            `/whatsapp/conversations/${conversation.id}/messages`,
+            {
+                body: submittedBody,
+                media: submittedMedia,
+                idempotency_key: submittedKey,
+                reply_to_message_id: submittedReplyTarget?.id ?? null,
             },
-            onSuccess: () => {
-                clearErrors();
-            },
-            onError: (submitErrors: MessageSubmitErrors) => {
-                setError(submitErrors);
+            {
+                async: true,
+                forceFormData: true,
+                preserveScroll: true,
+                onProgress: (progress: UploadProgress) => {
+                    if (submittedMedia.length === 0) {
+                        return;
+                    }
 
-                if (composerBodyRef.current.trim() === '' && composerMediaRef.current.length === 0) {
-                    composerBodyRef.current = submittedBody;
-                    composerMediaRef.current = submittedMedia;
-                    setData({
-                        body: submittedBody,
-                        media: submittedMedia,
-                        idempotency_key: submittedKey,
-                    });
-                    return;
-                }
+                    setSendProgress(progress?.percentage ?? null);
+                },
+                onSuccess: () => {
+                    clearErrors();
+                    if (
+                        activeConversationIdRef.current ===
+                        conversation.external_id
+                    ) {
+                        setReplyTarget((currentTarget) =>
+                            currentTarget?.id === submittedReplyTarget?.id
+                                ? null
+                                : currentTarget,
+                        );
+                    }
+                },
+                onError: (submitErrors: MessageSubmitErrors) => {
+                    setError(submitErrors);
 
-                toast.error('No se pudo enviar el mensaje anterior. No reemplacé lo que estás escribiendo.');
+                    if (
+                        composerBodyRef.current.trim() === '' &&
+                        composerMediaRef.current.length === 0
+                    ) {
+                        composerBodyRef.current = submittedBody;
+                        composerMediaRef.current = submittedMedia;
+                        setData({
+                            body: submittedBody,
+                            media: submittedMedia,
+                            idempotency_key: submittedKey,
+                        });
+                        return;
+                    }
+
+                    toast.error(
+                        'No se pudo enviar el mensaje anterior. No reemplacé lo que estás escribiendo.',
+                    );
+                },
+                onFinish: () => setSendProgress(null),
             },
-            onFinish: () => setSendProgress(null),
-        });
+        );
     };
 
     const sendContact = (contact: AgendaContact) => {
@@ -1340,30 +1889,83 @@ function MessagePanel({
         clearErrors();
         setSendingContactId(contact.id);
 
-        router.post(`/whatsapp/conversations/${conversation.id}/contacts`, {
-            contact_id: contact.id,
-            idempotency_key: generateIdempotencyKey(),
-        }, {
-            async: true,
-            preserveScroll: true,
-            onSuccess: () => {
-                setContactSelectorOpen(false);
+        router.post(
+            `/whatsapp/conversations/${conversation.id}/contacts`,
+            {
+                contact_id: contact.id,
+                idempotency_key: generateIdempotencyKey(),
             },
-            onError: (submitErrors: MessageSubmitErrors) => {
-                setError(submitErrors);
-                toast.error(submitErrors.contact_id ?? submitErrors.idempotency_key ?? 'No se pudo enviar el contacto.');
+            {
+                async: true,
+                preserveScroll: true,
+                onSuccess: () => {
+                    setContactSelectorOpen(false);
+                },
+                onError: (submitErrors: MessageSubmitErrors) => {
+                    setError(submitErrors);
+                    toast.error(
+                        submitErrors.contact_id ??
+                            submitErrors.idempotency_key ??
+                            'No se pudo enviar el contacto.',
+                    );
+                },
+                onFinish: () => setSendingContactId(null),
             },
-            onFinish: () => setSendingContactId(null),
-        });
+        );
     };
 
-    const handleComposerKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-        if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) {
+    const handleComposerKeyDown = (
+        event: KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+        if (
+            event.key !== 'Enter' ||
+            event.shiftKey ||
+            event.nativeEvent.isComposing
+        ) {
             return;
         }
 
         event.preventDefault();
         sendMessage();
+    };
+
+    const rememberComposerSelection = () => {
+        const textarea = textareaRef.current;
+
+        if (!textarea) {
+            return;
+        }
+
+        composerSelectionRef.current = {
+            start: textarea.selectionStart,
+            end: textarea.selectionEnd,
+        };
+    };
+
+    const toggleComposerEmojiPicker = () => {
+        rememberComposerSelection();
+        setComposerEmojiPickerOpen((open) => !open);
+    };
+
+    const insertComposerEmoji = (emoji: string) => {
+        const { start, end } = composerSelectionRef.current;
+        const nextBody = `${data.body.slice(0, start)}${emoji}${data.body.slice(end)}`;
+        const cursor = start + emoji.length;
+
+        composerBodyRef.current = nextBody;
+        setData('body', nextBody);
+        setComposerEmojiPickerOpen(false);
+
+        window.requestAnimationFrame(() => {
+            textareaRef.current?.focus();
+            textareaRef.current?.setSelectionRange(cursor, cursor);
+            composerSelectionRef.current = { start: cursor, end: cursor };
+        });
+    };
+
+    const replyToMessage = (message: MessageItem) => {
+        setReplyTarget(message);
+        window.requestAnimationFrame(() => textareaRef.current?.focus());
     };
 
     const addFiles = (incomingFiles: File[]) => {
@@ -1383,7 +1985,10 @@ function MessagePanel({
             return;
         }
 
-        if (nextFiles.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_FILE_BYTES) {
+        if (
+            nextFiles.reduce((total, file) => total + file.size, 0) >
+            MAX_TOTAL_FILE_BYTES
+        ) {
             toast.error('Los archivos no pueden superar 50 MB.');
             return;
         }
@@ -1394,7 +1999,9 @@ function MessagePanel({
     };
 
     const removeFile = (index: number) => {
-        const nextFiles = data.media.filter((_, fileIndex) => fileIndex !== index);
+        const nextFiles = data.media.filter(
+            (_, fileIndex) => fileIndex !== index,
+        );
 
         composerMediaRef.current = nextFiles;
         setData('media', nextFiles);
@@ -1433,7 +2040,10 @@ function MessagePanel({
             return;
         }
 
-        setActiveMatchIndex((index) => (index - 1 + searchMatches.length) % searchMatches.length);
+        setActiveMatchIndex(
+            (index) =>
+                (index - 1 + searchMatches.length) % searchMatches.length,
+        );
     };
 
     const goToNextMatch = () => {
@@ -1449,7 +2059,9 @@ function MessagePanel({
             return;
         }
 
-        setImagePreview(imageGallery[(index + imageGallery.length) % imageGallery.length]);
+        setImagePreview(
+            imageGallery[(index + imageGallery.length) % imageGallery.length],
+        );
     };
 
     return (
@@ -1457,8 +2069,14 @@ function MessagePanel({
             <header className="app-surface border-b p-3 px-5">
                 <div className="flex items-center justify-between gap-4">
                     <div>
-                        <h2 className="text-lg font-semibold">{conversationTitle(conversation)}</h2>
-                        {conversation.display_description ? <p className="app-muted mt-0.5 truncate text-sm">{conversation.display_description}</p> : null}
+                        <h2 className="text-lg font-semibold">
+                            {conversationTitle(conversation)}
+                        </h2>
+                        {conversation.display_description ? (
+                            <p className="app-muted mt-0.5 truncate text-sm">
+                                {conversation.display_description}
+                            </p>
+                        ) : null}
                     </div>
 
                     <div className="flex items-center gap-3">
@@ -1475,13 +2093,27 @@ function MessagePanel({
                                 <>
                                     {normalizedMessageSearch !== '' ? (
                                         <span className="app-faint text-xs">
-                                            {searchMatches.length === 0 ? '0' : `${activeMatchPosition + 1}/${searchMatches.length}`}
+                                            {searchMatches.length === 0
+                                                ? '0'
+                                                : `${activeMatchPosition + 1}/${searchMatches.length}`}
                                         </span>
                                     ) : null}
-                                    <button type="button" onClick={goToPreviousMatch} disabled={searchMatches.length === 0} className="app-muted rounded-md p-1 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado anterior">
+                                    <button
+                                        type="button"
+                                        onClick={goToPreviousMatch}
+                                        disabled={searchMatches.length === 0}
+                                        className="app-muted rounded-md p-1 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-not-allowed disabled:opacity-40"
+                                        aria-label="Resultado anterior"
+                                    >
                                         <ChevronUp className="size-4" />
                                     </button>
-                                    <button type="button" onClick={goToNextMatch} disabled={searchMatches.length === 0} className="app-muted rounded-md p-1 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-not-allowed disabled:opacity-40" aria-label="Resultado siguiente">
+                                    <button
+                                        type="button"
+                                        onClick={goToNextMatch}
+                                        disabled={searchMatches.length === 0}
+                                        className="app-muted rounded-md p-1 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-not-allowed disabled:opacity-40"
+                                        aria-label="Resultado siguiente"
+                                    >
                                         <ChevronDown className="size-4" />
                                     </button>
                                 </>
@@ -1507,7 +2139,11 @@ function MessagePanel({
                     }
                 }}
                 onDragLeave={(event) => {
-                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    if (
+                        !event.currentTarget.contains(
+                            event.relatedTarget as Node | null,
+                        )
+                    ) {
                         setIsDraggingFiles(false);
                     }
                 }}
@@ -1516,13 +2152,15 @@ function MessagePanel({
                 style={CHAT_BACKGROUND_STYLE}
             >
                 {messages.length === 0 ? (
-                    <p className="flex text-xs items-center justify-center app-message-text">
+                    <p className="app-message-text flex items-center justify-center text-xs">
                         No hay mensajes para este chat.
                     </p>
                 ) : (
                     <div className="space-y-2">
                         {normalizedMessageSearch !== '' ? (
-                            <p className="app-faint text-center text-xs">Buscá en los mensajes cargados.</p>
+                            <p className="app-faint text-center text-xs">
+                                Buscá en los mensajes cargados.
+                            </p>
                         ) : null}
                         {hasMoreMessages ? (
                             <div className="flex justify-center pb-2">
@@ -1532,18 +2170,35 @@ function MessagePanel({
                                     disabled={isLoadingOlder}
                                     className="app-button rounded-full border px-3 py-1 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
                                 >
-                                    {isLoadingOlder ? 'Cargando mensajes anteriores...' : 'Cargar mensajes anteriores'}
+                                    {isLoadingOlder
+                                        ? 'Cargando mensajes anteriores...'
+                                        : 'Cargar mensajes anteriores'}
                                 </button>
                             </div>
                         ) : null}
-                        {firstUnreadMessageId !== null && !messages.some((message) => message.id === firstUnreadMessageId) ? <UnreadDivider text="Hay mensajes no leídos más arriba" /> : null}
+                        {firstUnreadMessageId !== null &&
+                        !messages.some(
+                            (message) => message.id === firstUnreadMessageId,
+                        ) ? (
+                            <UnreadDivider text="Hay mensajes no leídos más arriba" />
+                        ) : null}
                         {messageRenderItems.map((item) => {
                             if (item.type === 'divider') {
-                                return <UnreadDivider key={item.key} text={item.text} />;
+                                return (
+                                    <UnreadDivider
+                                        key={item.key}
+                                        text={item.text}
+                                    />
+                                );
                             }
 
                             if (item.type === 'date-divider') {
-                                return <DateDivider key={item.key} text={item.text} />;
+                                return (
+                                    <DateDivider
+                                        key={item.key}
+                                        text={item.text}
+                                    />
+                                );
                             }
 
                             if (item.type === 'image-group') {
@@ -1553,7 +2208,8 @@ function MessagePanel({
                                         messages={item.messages}
                                         onOpenImage={setImagePreview}
                                         refCallback={(messageId, element) => {
-                                            messageRefs.current[messageId] = element;
+                                            messageRefs.current[messageId] =
+                                                element;
                                         }}
                                     />
                                 );
@@ -1563,11 +2219,17 @@ function MessagePanel({
                                 <MessageBubble
                                     key={item.message.id}
                                     message={item.message}
+                                    conversation={conversation}
                                     onOpenImage={setImagePreview}
                                     searchQuery={messageSearch}
-                                    activeSearchMatch={searchMatches[activeMatchPosition] === item.message.id}
+                                    activeSearchMatch={
+                                        searchMatches[activeMatchPosition] ===
+                                        item.message.id
+                                    }
+                                    onReply={replyToMessage}
                                     refCallback={(element) => {
-                                        messageRefs.current[item.message.id] = element;
+                                        messageRefs.current[item.message.id] =
+                                            element;
                                     }}
                                 />
                             );
@@ -1576,27 +2238,40 @@ function MessagePanel({
                 )}
             </div>
 
-            <footer className="app-surface m-3 rounded-b-3xl rounded-t-3xl border p-1">
+            <footer className="app-surface m-3 rounded-t-3xl rounded-b-3xl border p-1">
                 <form onSubmit={submitMessage} className="space-y-2">
-                    <input type="hidden" value={data.idempotency_key} readOnly />
+                    <input
+                        type="hidden"
+                        value={data.idempotency_key}
+                        readOnly
+                    />
                     <input
                         ref={fileInputRef}
                         type="file"
                         className="hidden"
                         multiple
-                        onChange={(event) => handleFileInputChange(event.target.files)}
+                        onChange={(event) =>
+                            handleFileInputChange(event.target.files)
+                        }
                     />
                     {data.media.length > 0 ? (
                         <div className="ml-14 flex max-w-[75%] flex-wrap gap-2">
                             {data.media.map((file, index) => (
-                                <div key={`${file.name}-${file.size}-${index}`} className="flex max-w-full items-center gap-2 rounded-full bg-(--app-surface-strong) px-3 py-1 text-xs">
+                                <div
+                                    key={`${file.name}-${file.size}-${index}`}
+                                    className="flex max-w-full items-center gap-2 rounded-full bg-(--app-surface-strong) px-3 py-1 text-xs"
+                                >
                                     <Paperclip className="size-3.5 shrink-0" />
-                                    <span className="truncate">{file.name}</span>
-                                    <span className="app-muted shrink-0">{formatBytes(file.size)}</span>
+                                    <span className="truncate">
+                                        {file.name}
+                                    </span>
+                                    <span className="app-muted shrink-0">
+                                        {formatBytes(file.size)}
+                                    </span>
                                     <button
                                         type="button"
                                         onClick={() => removeFile(index)}
-                                        className="rounded-full p-0.3 transition hover:bg-(--app-control-hover)"
+                                        className="p-0.3 rounded-full transition hover:bg-(--app-control-hover)"
                                         aria-label="Quitar adjunto"
                                     >
                                         <X className="size-3.5" />
@@ -1605,11 +2280,43 @@ function MessagePanel({
                             ))}
                         </div>
                     ) : null}
-                    <div className="flex items-end gap-2">
-                        <div ref={attachmentMenuRef} className="relative shrink-0">
+                    {replyTarget ? (
+                        <div className="app-surface-soft ml-14 flex min-w-0 items-center gap-3 rounded-2xl border border-l-4 border-l-(--app-accent) px-3 py-2">
+                            <Reply
+                                className="size-4 shrink-0 text-(--app-accent)"
+                                aria-hidden="true"
+                            />
+                            <div className="min-w-0 flex-1">
+                                <p className="text-xs font-semibold text-(--app-accent)">
+                                    {replySenderLabel(
+                                        replyTarget,
+                                        conversation,
+                                    )}
+                                </p>
+                                <p className="app-muted truncate text-xs">
+                                    {replyPreviewLabel(replyTarget)}
+                                </p>
+                            </div>
                             <button
                                 type="button"
-                                onClick={() => setAttachmentMenuOpen((current) => !current)}
+                                onClick={() => setReplyTarget(null)}
+                                className="app-muted app-focus-ring grid size-7 shrink-0 place-items-center rounded-full transition hover:bg-(--app-control-hover) hover:text-(--app-accent)"
+                                aria-label="Cancelar respuesta"
+                            >
+                                <X className="size-4" />
+                            </button>
+                        </div>
+                    ) : null}
+                    <div className="flex items-end gap-2">
+                        <div
+                            ref={attachmentMenuRef}
+                            className="relative shrink-0"
+                        >
+                            <button
+                                type="button"
+                                onClick={() =>
+                                    setAttachmentMenuOpen((current) => !current)
+                                }
                                 className="app-button-primary grid size-10 place-items-center rounded-full transition"
                                 aria-label="Adjuntar"
                                 aria-expanded={attachmentMenuOpen}
@@ -1618,7 +2325,10 @@ function MessagePanel({
                                 <Paperclip className="size-4" />
                             </button>
                             {attachmentMenuOpen ? (
-                                <div className="app-menu absolute bottom-[calc(100%+0.5rem)] left-0 z-20 w-44 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30" role="menu">
+                                <div
+                                    className="app-menu absolute bottom-[calc(100%+0.5rem)] left-0 z-20 w-44 rounded-xl border p-1 text-sm shadow-2xl shadow-black/30"
+                                    role="menu"
+                                >
                                     <button
                                         type="button"
                                         onClick={() => {
@@ -1650,36 +2360,97 @@ function MessagePanel({
                             Mensaje
                         </label>
                         <div className="flex min-h-10 flex-1 items-end">
+                            <div
+                                ref={composerEmojiPickerRef}
+                                className="relative self-end"
+                            >
+                                <button
+                                    ref={composerEmojiTriggerRef}
+                                    type="button"
+                                    onClick={toggleComposerEmojiPicker}
+                                    className="app-button-primary grid size-10 place-items-center rounded-full transition"
+                                    aria-label="Insertar emoji"
+                                    aria-expanded={composerEmojiPickerOpen}
+                                    aria-haspopup="dialog"
+                                >
+                                    <Smile className="size-4" />
+                                </button>
+
+                                {composerEmojiPickerOpen ? (
+                                    <div
+                                        className="app-menu absolute bottom-[calc(100%+0.5rem)] left-0 z-20 rounded-xl border shadow-2xl shadow-black/30"
+                                        role="dialog"
+                                        aria-label="Elegir emoji"
+                                    >
+                                        <EmojiPicker
+                                            onSelect={(emoji) => {
+                                                insertComposerEmoji(emoji);
+                                            }}
+                                        />
+                                    </div>
+                                ) : null}
+                            </div>
                             <textarea
                                 ref={textareaRef}
                                 id="message-body"
                                 value={data.body}
                                 onChange={(event) => {
-                                    composerBodyRef.current = event.target.value;
+                                    composerBodyRef.current =
+                                        event.target.value;
                                     setData('body', event.target.value);
                                 }}
                                 onKeyDown={handleComposerKeyDown}
+                                onSelect={rememberComposerSelection}
+                                onClick={rememberComposerSelection}
+                                onKeyUp={rememberComposerSelection}
                                 onPaste={handlePaste}
                                 rows={1}
                                 maxLength={4000}
-                                placeholder={data.media.length > 0 ? 'Agregá un comentario' : 'Escribí un mensaje'}
-                                className=" max-h-36 min-h-10 flex-1 resize-none px-2 pt-3 pb-1.5 text-sm leading-5 outline-none transition"
+                                placeholder={
+                                    data.media.length > 0
+                                        ? 'Agregá un comentario'
+                                        : 'Escribí un mensaje'
+                                }
+                                className="max-h-36 min-h-10 flex-1 resize-none px-2 pt-3 pb-1.5 text-sm leading-5 transition outline-none"
                             />
                         </div>
                         <button
                             type="submit"
-                            disabled={data.body.trim() === '' && data.media.length === 0}
+                            disabled={
+                                data.body.trim() === '' &&
+                                data.media.length === 0
+                            }
                             className="app-button-primary grid size-10 shrink-0 place-items-center rounded-full transition disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label="Enviar mensaje"
                         >
                             <Send className="size-4" />
                         </button>
                     </div>
-                    {sendProgress !== null ? <p className="app-muted ml-14 text-xs">Subiendo archivos… {sendProgress}%</p> : null}
-                    {errors.body ? <p className="mt-2 text-sm text-(--app-danger)">{errors.body}</p> : null}
-                    {errors.media ? <p className="mt-2 text-sm text-(--app-danger)">{errors.media}</p> : null}
-                    {errors.contact_id ? <p className="mt-2 text-sm text-(--app-danger)">{errors.contact_id}</p> : null}
-                    {errors.idempotency_key ? <p className="mt-2 text-sm text-(--app-danger)">{errors.idempotency_key}</p> : null}
+                    {sendProgress !== null ? (
+                        <p className="app-muted ml-14 text-xs">
+                            Subiendo archivos… {sendProgress}%
+                        </p>
+                    ) : null}
+                    {errors.body ? (
+                        <p className="mt-2 text-sm text-(--app-danger)">
+                            {errors.body}
+                        </p>
+                    ) : null}
+                    {errors.media ? (
+                        <p className="mt-2 text-sm text-(--app-danger)">
+                            {errors.media}
+                        </p>
+                    ) : null}
+                    {errors.contact_id ? (
+                        <p className="mt-2 text-sm text-(--app-danger)">
+                            {errors.contact_id}
+                        </p>
+                    ) : null}
+                    {errors.idempotency_key ? (
+                        <p className="mt-2 text-sm text-(--app-danger)">
+                            {errors.idempotency_key}
+                        </p>
+                    ) : null}
                 </form>
             </footer>
             {contactSelectorOpen ? (
@@ -1692,7 +2463,11 @@ function MessagePanel({
             {imagePreview ? (
                 <ImageViewerModal
                     image={imagePreview}
-                    positionLabel={activeImageIndex >= 0 ? `${activeImageIndex + 1}/${imageGallery.length}` : null}
+                    positionLabel={
+                        activeImageIndex >= 0
+                            ? `${activeImageIndex + 1}/${imageGallery.length}`
+                            : null
+                    }
                     canNavigate={imageGallery.length > 1}
                     onPrevious={() => showGalleryImage(activeImageIndex - 1)}
                     onNext={() => showGalleryImage(activeImageIndex + 1)}
@@ -1707,8 +2482,20 @@ function isGalleryImage(message: MessageItem): boolean {
     return message.type === 'image' && message.media_url !== null;
 }
 
+function canReplyToMessage(message: MessageItem): boolean {
+    return (
+        message.deleted_at === null &&
+        message.external_id !== null &&
+        message.external_id.trim() !== ''
+    );
+}
+
 function isGroupableGalleryImage(message: MessageItem): boolean {
-    return isGalleryImage(message) && (message.body === null || message.body.trim() === '');
+    return (
+        isGalleryImage(message) &&
+        !canReplyToMessage(message) &&
+        (message.body === null || message.body.trim() === '')
+    );
 }
 
 function messageTimestampValue(message: MessageItem): string | null {
@@ -1731,8 +2518,13 @@ function messageDateKey(message: MessageItem): string | null {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function contiguousImageGallery(messages: MessageItem[], imageId: number): ImagePreview[] {
-    const clickedIndex = messages.findIndex((message) => message.id === imageId);
+function contiguousImageGallery(
+    messages: MessageItem[],
+    imageId: number,
+): ImagePreview[] {
+    const clickedIndex = messages.findIndex(
+        (message) => message.id === imageId,
+    );
 
     if (clickedIndex === -1 || !isGalleryImage(messages[clickedIndex])) {
         return [];
@@ -1741,17 +2533,29 @@ function contiguousImageGallery(messages: MessageItem[], imageId: number): Image
     if (!isGroupableGalleryImage(messages[clickedIndex])) {
         const message = messages[clickedIndex];
 
-        return [{ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' }];
+        return [
+            {
+                id: message.id,
+                url: message.media_url!,
+                filename: message.media_filename ?? 'imagen',
+            },
+        ];
     }
 
     let startIndex = clickedIndex;
     let endIndex = clickedIndex;
 
-    while (startIndex > 0 && isGroupableGalleryImage(messages[startIndex - 1])) {
+    while (
+        startIndex > 0 &&
+        isGroupableGalleryImage(messages[startIndex - 1])
+    ) {
         startIndex -= 1;
     }
 
-    while (endIndex < messages.length - 1 && isGroupableGalleryImage(messages[endIndex + 1])) {
+    while (
+        endIndex < messages.length - 1 &&
+        isGroupableGalleryImage(messages[endIndex + 1])
+    ) {
         endIndex += 1;
     }
 
@@ -1762,7 +2566,10 @@ function contiguousImageGallery(messages: MessageItem[], imageId: number): Image
     }));
 }
 
-function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId: number | null): MessageRenderItem[] {
+function groupedMessageRenderItems(
+    messages: MessageItem[],
+    firstUnreadMessageId: number | null,
+): MessageRenderItem[] {
     const items: MessageRenderItem[] = [];
     let index = 0;
     let currentDateKey: string | null = null;
@@ -1773,11 +2580,19 @@ function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId
 
         if (dateKey !== null && dateKey !== currentDateKey) {
             currentDateKey = dateKey;
-            items.push({ type: 'date-divider', key: `date-${dateKey}`, text: formatMessageDateDivider(messageTimestampValue(message)) });
+            items.push({
+                type: 'date-divider',
+                key: `date-${dateKey}`,
+                text: formatMessageDateDivider(messageTimestampValue(message)),
+            });
         }
 
         if (message.id === firstUnreadMessageId) {
-            items.push({ type: 'divider', key: `unread-${message.id}`, text: 'Mensajes no leídos' });
+            items.push({
+                type: 'divider',
+                key: `unread-${message.id}`,
+                text: 'Mensajes no leídos',
+            });
         }
 
         if (!isGroupableGalleryImage(message)) {
@@ -1789,7 +2604,11 @@ function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId
         const imageMessages: MessageItem[] = [message];
         let nextIndex = index + 1;
 
-        while (nextIndex < messages.length && isGroupableGalleryImage(messages[nextIndex]) && messages[nextIndex].id !== firstUnreadMessageId) {
+        while (
+            nextIndex < messages.length &&
+            isGroupableGalleryImage(messages[nextIndex]) &&
+            messages[nextIndex].id !== firstUnreadMessageId
+        ) {
             imageMessages.push(messages[nextIndex]);
             nextIndex += 1;
         }
@@ -1797,7 +2616,11 @@ function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId
         if (imageMessages.length === 1) {
             items.push({ type: 'message', message });
         } else {
-            items.push({ type: 'image-group', key: `images-${imageMessages.map((imageMessage) => imageMessage.id).join('-')}`, messages: imageMessages });
+            items.push({
+                type: 'image-group',
+                key: `images-${imageMessages.map((imageMessage) => imageMessage.id).join('-')}`,
+                messages: imageMessages,
+            });
         }
 
         index = nextIndex;
@@ -1808,7 +2631,11 @@ function groupedMessageRenderItems(messages: MessageItem[], firstUnreadMessageId
 
 function UnreadDivider({ text }: { text: string }) {
     return (
-        <div className="my-3 flex items-center gap-3" role="separator" aria-label={text}>
+        <div
+            className="my-3 flex items-center gap-3"
+            role="separator"
+            aria-label={text}
+        >
             <span className="app-accent-line h-px flex-1" />
             <span className="app-unread-chip rounded-full border px-3 py-1 text-[11px] font-semibold shadow-sm">
                 {text}
@@ -1820,7 +2647,11 @@ function UnreadDivider({ text }: { text: string }) {
 
 function DateDivider({ text }: { text: string }) {
     return (
-        <div className="my-4 flex items-center justify-center gap-3" role="separator" aria-label={text}>
+        <div
+            className="my-4 flex items-center justify-center gap-3"
+            role="separator"
+            aria-label={text}
+        >
             <span className="app-date-line h-px w-16 max-w-[22vw]" />
             <span className="app-date-chip rounded-full border px-3 py-1 text-[11px] font-semibold shadow-sm backdrop-blur">
                 {text}
@@ -1830,35 +2661,61 @@ function DateDivider({ text }: { text: string }) {
     );
 }
 
-function ImageGroupBubble({ messages, onOpenImage, refCallback }: { messages: MessageItem[]; onOpenImage: (image: ImagePreview) => void; refCallback: (messageId: number, element: HTMLElement | null) => void }) {
+function ImageGroupBubble({
+    messages,
+    onOpenImage,
+    refCallback,
+}: {
+    messages: MessageItem[];
+    onOpenImage: (image: ImagePreview) => void;
+    refCallback: (messageId: number, element: HTMLElement | null) => void;
+}) {
     if (messages.length === 0) {
         return null;
     }
 
     const fromMe = messages[0]?.direction === 'outbound';
     const lastMessage = messages[messages.length - 1];
-    const timestamp = lastMessage.sent_at ?? lastMessage.received_at ?? lastMessage.created_at;
+    const timestamp =
+        lastMessage.sent_at ??
+        lastMessage.received_at ??
+        lastMessage.created_at;
     const visibleMessages = messages.slice(0, 4);
     const hiddenCount = messages.length - visibleMessages.length;
 
     return (
-        <article className={`flex min-w-0 ${fromMe ? 'justify-end' : 'justify-start'}`}>
+        <article
+            className={`flex min-w-0 ${fromMe ? 'justify-end' : 'justify-start'}`}
+        >
             <div
                 ref={(element) => {
-                    messages.forEach((message) => refCallback(message.id, element));
+                    messages.forEach((message) =>
+                        refCallback(message.id, element),
+                    );
                 }}
-                className={`app-message-bubble relative min-w-0 max-w-[70%] rounded-xl border p-1.5 shadow-sm transition ${fromMe ? 'app-message-bubble-out' : ''}`}
+                className={`app-message-bubble relative max-w-[70%] min-w-0 rounded-xl border p-1.5 shadow-sm transition ${fromMe ? 'app-message-bubble-out' : ''}`}
             >
-                <div className={`app-image-group app-image-group-${Math.min(messages.length, 4)}`}>
+                <div
+                    className={`app-image-group app-image-group-${Math.min(messages.length, 4)}`}
+                >
                     {visibleMessages.map((message, index) => {
-                        const isLastVisible = index === visibleMessages.length - 1;
+                        const isLastVisible =
+                            index === visibleMessages.length - 1;
 
                         return (
                             <ImageGroupItem
                                 key={message.id}
                                 message={message}
-                                className={messages.length === 3 && index === 0 ? 'app-image-group-item-large' : ''}
-                                hiddenCount={hiddenCount > 0 && isLastVisible ? hiddenCount : 0}
+                                className={
+                                    messages.length === 3 && index === 0
+                                        ? 'app-image-group-item-large'
+                                        : ''
+                                }
+                                hiddenCount={
+                                    hiddenCount > 0 && isLastVisible
+                                        ? hiddenCount
+                                        : 0
+                                }
                                 onOpenImage={onOpenImage}
                             />
                         );
@@ -1873,7 +2730,17 @@ function ImageGroupBubble({ messages, onOpenImage, refCallback }: { messages: Me
     );
 }
 
-function ImageGroupItem({ message, className, hiddenCount, onOpenImage }: { message: MessageItem; className: string; hiddenCount: number; onOpenImage: (image: ImagePreview) => void }) {
+function ImageGroupItem({
+    message,
+    className,
+    hiddenCount,
+    onOpenImage,
+}: {
+    message: MessageItem;
+    className: string;
+    hiddenCount: number;
+    onOpenImage: (image: ImagePreview) => void;
+}) {
     const [imageLoadFailed, setImageLoadFailed] = useState(false);
 
     useEffect(() => {
@@ -1884,7 +2751,9 @@ function ImageGroupItem({ message, className, hiddenCount, onOpenImage }: { mess
         return (
             <div className={`app-image-group-item ${className}`}>
                 <ImageUnavailableFallback compact />
-                {hiddenCount > 0 ? <span className="app-image-group-more">+{hiddenCount}</span> : null}
+                {hiddenCount > 0 ? (
+                    <span className="app-image-group-more">+{hiddenCount}</span>
+                ) : null}
             </div>
         );
     }
@@ -1892,30 +2761,121 @@ function ImageGroupItem({ message, className, hiddenCount, onOpenImage }: { mess
     return (
         <button
             type="button"
-            onClick={() => onOpenImage({ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
+            onClick={() =>
+                onOpenImage({
+                    id: message.id,
+                    url: message.media_url!,
+                    filename: message.media_filename ?? 'imagen',
+                })
+            }
             className={`app-image-group-item ${className}`}
             aria-label="Abrir imagen"
         >
-            <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} loading="lazy" onError={() => setImageLoadFailed(true)} />
-            {hiddenCount > 0 ? <span className="app-image-group-more">+{hiddenCount}</span> : null}
+            <img
+                src={message.media_url}
+                alt={message.media_filename ?? 'Imagen adjunta'}
+                loading="lazy"
+                onError={() => setImageLoadFailed(true)}
+            />
+            {hiddenCount > 0 ? (
+                <span className="app-image-group-more">+{hiddenCount}</span>
+            ) : null}
         </button>
     );
 }
 
-function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, refCallback }: { message: MessageItem; onOpenImage: (image: ImagePreview) => void; searchQuery: string; activeSearchMatch: boolean; refCallback: (element: HTMLElement | null) => void }) {
+function MessageBubble({
+    message,
+    conversation,
+    onOpenImage,
+    onReply,
+    searchQuery,
+    activeSearchMatch,
+    refCallback,
+}: {
+    message: MessageItem;
+    conversation: ConversationItem;
+    onOpenImage: (image: ImagePreview) => void;
+    onReply: (message: MessageItem) => void;
+    searchQuery: string;
+    activeSearchMatch: boolean;
+    refCallback: (element: HTMLElement | null) => void;
+}) {
     const fromMe = message.direction === 'outbound';
-    const timestamp = message.sent_at ?? message.received_at ?? message.created_at;
+    const timestamp =
+        message.sent_at ?? message.received_at ?? message.created_at;
     const bubbleRef = useRef<HTMLDivElement>(null);
     const [actionsOpen, setActionsOpen] = useState(false);
-    const [actionMode, setActionMode] = useState<'list' | 'edit' | 'delete'>('list');
+    const [actionsReference, setActionsReference] = useState<Element | null>(
+        null,
+    );
+    const [actionMode, setActionMode] = useState<'list' | 'edit' | 'delete'>(
+        'list',
+    );
     const [editBody, setEditBody] = useState(message.body ?? '');
     const [processingMutation, setProcessingMutation] = useState(false);
+    const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
+    const [reactionReference, setReactionReference] = useState<Element | null>(
+        null,
+    );
+    const [reactionTriggerVisible, setReactionTriggerVisible] = useState(false);
+    const [reactionError, setReactionError] = useState<string | null>(null);
+    const [optimisticReaction, setOptimisticReaction] = useState<{
+        messageId: number;
+        emoji: string;
+        snapshot: string;
+    } | null>(null);
     const [messageExpanded, setMessageExpanded] = useState(false);
-    const [audioTimeLabel, setAudioTimeLabel] = useState<string | null>(() => message.type === 'audio' ? formatAudioTime(audioMetadataDuration(message.media_metadata)) : null);
+    const [audioTimeLabel, setAudioTimeLabel] = useState<string | null>(() =>
+        message.type === 'audio'
+            ? formatAudioTime(audioMetadataDuration(message.media_metadata))
+            : null,
+    );
     const deleted = message.deleted_at !== null;
-    const canShowMenu = !deleted && (message.can_edit || message.can_delete);
+    const canReply = canReplyToMessage(message);
+    const canShowMenu = message.can_edit || message.can_delete || canReply;
+    const canReact = !deleted && message.can_react;
+    const reactionSnapshot = reactionSnapshotSignature(message.media_metadata);
+    const reactionOverlayEmoji =
+        optimisticReaction?.messageId === message.id
+            ? optimisticReaction.emoji
+            : message.accepted_reaction_emoji;
+    const visibleReactionBadges = reactionBadgesFor(
+        message.media_metadata,
+        reactionOverlayEmoji,
+    );
 
-    useCloseOnOutsidePointer(bubbleRef, actionsOpen, () => closeActions());
+    const closeActions = () => {
+        setActionsOpen(false);
+        setActionMode('list');
+        setEditBody(message.body ?? '');
+    };
+
+    const closeReactionPicker = () => {
+        setReactionPickerOpen(false);
+        setReactionReference(null);
+        setReactionTriggerVisible(false);
+    };
+
+    useEffect(() => {
+        closeReactionPicker();
+        setOptimisticReaction(null);
+    }, [conversation.external_id, message.id]);
+
+    useEffect(() => {
+        if (
+            optimisticReaction?.messageId === message.id &&
+            (message.accepted_reaction_at !== null ||
+                optimisticReaction.snapshot !== reactionSnapshot)
+        ) {
+            setOptimisticReaction(null);
+        }
+    }, [
+        message.accepted_reaction_at,
+        message.id,
+        optimisticReaction,
+        reactionSnapshot,
+    ]);
 
     useEffect(() => {
         if (actionMode !== 'edit') {
@@ -1924,14 +2884,12 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
     }, [actionMode, message.body]);
 
     useEffect(() => {
-        setAudioTimeLabel(message.type === 'audio' ? formatAudioTime(audioMetadataDuration(message.media_metadata)) : null);
+        setAudioTimeLabel(
+            message.type === 'audio'
+                ? formatAudioTime(audioMetadataDuration(message.media_metadata))
+                : null,
+        );
     }, [message.media_metadata, message.type]);
-
-    const closeActions = () => {
-        setActionsOpen(false);
-        setActionMode('list');
-        setEditBody(message.body ?? '');
-    };
 
     const submitEdit = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -1969,25 +2927,103 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
         });
     };
 
+    const submitReaction = (emoji: string) => {
+        if (processingMutation) {
+            return;
+        }
+
+        setProcessingMutation(true);
+        setReactionError(null);
+
+        void fetch(`/whatsapp/messages/${message.id}/reactions`, {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken(),
+            },
+            body: JSON.stringify({ emoji }),
+        })
+            .then(async (response) => {
+                if (response.ok) {
+                    return;
+                }
+
+                const payload = (await response.json().catch(() => null)) as {
+                    message?: unknown;
+                } | null;
+                throw new Error(
+                    typeof payload?.message === 'string'
+                        ? payload.message
+                        : 'No se pudo actualizar la reacción.',
+                );
+            })
+            .then(() => {
+                setOptimisticReaction({
+                    messageId: message.id,
+                    emoji,
+                    snapshot: reactionSnapshot,
+                });
+                closeReactionPicker();
+                router.reload({
+                    only: ['messages'],
+                    preserveScroll: true,
+                    onSuccess: () => setOptimisticReaction(null),
+                });
+            })
+            .catch((error: unknown) => {
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : 'No se pudo actualizar la reacción.';
+                setReactionError(message);
+                toast.error(message);
+            })
+            .finally(() => setProcessingMutation(false));
+    };
+
     return (
-        <article className={`flex min-w-0 ${fromMe ? 'justify-end' : 'justify-start'}`}>
+        <article
+            className={`group flex min-w-0 items-center gap-2 ${
+                fromMe
+                    ? 'flex-row-reverse justify-start'
+                    : 'flex-row justify-start'
+            }`}
+        >
             <div
                 ref={(element) => {
                     bubbleRef.current = element;
                     refCallback(element);
                 }}
-                className={`app-message-bubble group relative min-w-0 max-w-[70%] overflow-visible rounded-xl border px-3 py-2 shadow-sm transition ${fromMe ? 'app-message-bubble-out' : ''}`}
+                onPointerDown={(event) => {
+                    if (event.pointerType === 'touch') {
+                        setReactionTriggerVisible(true);
+                    }
+                }}
+                onPointerCancel={closeReactionPicker}
+                className={`app-message-bubble relative max-w-[70%] min-w-0 overflow-visible rounded-xl border px-3 py-2 shadow-sm transition ${
+                    fromMe ? 'app-message-bubble-out' : ''
+                }`}
             >
+                {message.quoted_message ? (
+                    <QuotedMessagePreview
+                        quotedMessage={message.quoted_message}
+                        conversation={conversation}
+                    />
+                ) : null}
                 {canShowMenu ? (
                     <div className="absolute top-1 right-1">
                         <button
                             type="button"
-                            onClick={() => {
-                                setActionsOpen(true);
+                            onClick={(event) => {
+                                setActionsReference(event.currentTarget);
+                                setActionsOpen((open) => !open);
                                 setActionMode('list');
                             }}
-                            className="app-muted grid size-7 place-items-center rounded-full opacity-70 transition hover:bg-(--app-control-hover) hover:text-(--app-accent) hover:opacity-100 group-hover:opacity-100"
+                            className="app-muted grid size-7 place-items-center rounded-full opacity-70 transition group-hover:opacity-100 hover:bg-(--app-control-hover) hover:text-(--app-accent) hover:opacity-100"
                             aria-label="Opciones del mensaje"
+                            aria-expanded={actionsOpen}
+                            aria-haspopup="dialog"
                         >
                             <MoreVertical className="size-4" />
                         </button>
@@ -1995,25 +3031,74 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                 ) : null}
 
                 {deleted ? (
-                    <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">Mensaje eliminado</p>
+                    <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">
+                        Mensaje eliminado
+                    </p>
                 ) : (
                     <>
-                        <MessageMedia message={message} onAudioTimeLabelChange={setAudioTimeLabel} onOpenImage={onOpenImage} />
+                        <MessageMedia
+                            message={message}
+                            onAudioTimeLabelChange={setAudioTimeLabel}
+                            onOpenImage={onOpenImage}
+                        />
                         {message.body && message.type !== 'contact' ? (
                             <MessageBody
                                 text={message.body}
                                 searchQuery={searchQuery}
                                 activeSearchMatch={activeSearchMatch}
                                 expanded={messageExpanded}
-                                onToggleExpanded={() => setMessageExpanded((current) => !current)}
+                                onToggleExpanded={() =>
+                                    setMessageExpanded((current) => !current)
+                                }
                             />
                         ) : message.type === 'text' ? (
-                            <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">Mensaje sin contenido</p>
+                            <p className="app-message-text app-muted pr-6 text-sm leading-6 italic">
+                                Mensaje sin contenido
+                            </p>
+                        ) : null}
+                        {visibleReactionBadges.length > 0 ? (
+                            <div
+                                className={`absolute bottom-0 z-10 flex max-w-full translate-y-1/2 flex-wrap gap-1 ${
+                                    fromMe ? 'right-2' : 'left-2'
+                                }`}
+                                aria-label="Reacciones del mensaje"
+                            >
+                                {visibleReactionBadges.map(
+                                    (emoji) => (
+                                        <button
+                                            key={emoji}
+                                            type="button"
+                                            onClick={(event) => {
+                                                setReactionReference(
+                                                    event.currentTarget,
+                                                );
+                                                setReactionPickerOpen(true);
+                                            }}
+                                            disabled={
+                                                !canReact || processingMutation
+                                            }
+                                            className="app-surface-soft app-focus-ring inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition hover:bg-(--app-control-hover) disabled:cursor-not-allowed disabled:opacity-60"
+                                            aria-label={`Reaccionar con ${emoji}`}
+                                        >
+                                            <span aria-hidden="true">
+                                                {emoji}
+                                            </span>
+                                        </button>
+                                    ),
+                                )}
+                            </div>
                         ) : null}
                     </>
                 )}
-                <p className={`app-muted mt-1 flex items-center text-[11px] ${message.type === 'audio' ? 'justify-between gap-4' : 'justify-end gap-1'}`}>
-                    {message.type === 'audio' && audioTimeLabel !== null ? <span className="shrink-0 tabular-nums">{audioTimeLabel}</span> : null}
+
+                <p
+                    className={`app-muted mt-1 flex items-center text-[11px] ${message.type === 'audio' ? 'justify-between gap-4' : 'justify-end gap-1'}`}
+                >
+                    {message.type === 'audio' && audioTimeLabel !== null ? (
+                        <span className="shrink-0 tabular-nums">
+                            {audioTimeLabel}
+                        </span>
+                    ) : null}
                     <span className="flex min-w-0 items-center justify-end gap-1">
                         <time>{formatMessageTimestamp(timestamp)}</time>
                         <MessageStatusIndicator status={message.status} />
@@ -2025,15 +3110,27 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                         {message.error_message}
                     </p>
                 ) : null}
-                {message.remote_edit_status === 'failed' && message.edit_error ? (
-                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">Edición fallida: {message.edit_error}</p>
+                {message.remote_edit_status === 'failed' &&
+                message.edit_error ? (
+                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">
+                        Edición fallida: {message.edit_error}
+                    </p>
                 ) : null}
-                {message.remote_delete_status === 'failed' && message.delete_error ? (
-                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">Eliminación fallida: {message.delete_error}</p>
+                {message.remote_delete_status === 'failed' &&
+                message.delete_error ? (
+                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">
+                        Eliminación fallida: {message.delete_error}
+                    </p>
+                ) : null}
+                {reactionError ? (
+                    <p className="app-message-text app-alert-danger mt-1 rounded-lg border px-2 py-1 text-xs leading-5">
+                        Reacción fallida: {reactionError}
+                    </p>
                 ) : null}
                 {actionsOpen ? (
                     <MessageActionsPanel
                         message={message}
+                        reference={actionsReference}
                         mode={actionMode}
                         editBody={editBody}
                         processing={processingMutation}
@@ -2041,28 +3138,98 @@ function MessageBubble({ message, onOpenImage, searchQuery, activeSearchMatch, r
                         onEditBodyChange={setEditBody}
                         onSubmitEdit={submitEdit}
                         onDelete={deleteMessage}
+                        onReply={() => {
+                            onReply(message);
+                            closeActions();
+                        }}
                         onClose={closeActions}
                     />
+                ) : null}
+                {canReact ? (
+                    <>
+                        <button
+                            type="button"
+                            onClick={(event) => {
+                                if (reactionPickerOpen) {
+                                    closeReactionPicker();
+                                    return;
+                                }
+
+                                setReactionReference(event.currentTarget);
+                                setReactionTriggerVisible(true);
+                                setReactionPickerOpen(true);
+                            }}
+                            disabled={processingMutation}
+                            className={`app-muted app-focus-ring absolute top-1/2 grid size-7 -translate-y-1/2 place-items-center rounded-full transition hover:bg-(--app-control-hover) hover:text-(--app-accent) disabled:cursor-wait disabled:opacity-60 ${
+                                fromMe ? 'right-full mr-1' : 'left-full ml-1'
+                            } ${
+                                reactionPickerOpen || reactionTriggerVisible
+                                    ? 'opacity-100'
+                                    : 'pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'
+                            }`}
+                            aria-label="Agregar reacción"
+                            aria-expanded={reactionPickerOpen}
+                            aria-haspopup="dialog"
+                        >
+                            <Smile className="size-4" />
+                        </button>
+                        <MessageReactionPopover
+                            open={reactionPickerOpen}
+                            reference={reactionReference}
+                            placement={fromMe ? 'top-end' : 'top-start'}
+                            processing={processingMutation}
+                            reactions={REACTION_EMOJIS}
+                            onOpenChange={(open) => {
+                                if (open) {
+                                    setReactionPickerOpen(true);
+                                } else {
+                                    closeReactionPicker();
+                                }
+                            }}
+                            onSelect={submitReaction}
+                        />
+                    </>
                 ) : null}
             </div>
         </article>
     );
 }
 
-function MessageBody({ text, searchQuery, activeSearchMatch, expanded, onToggleExpanded }: { text: string; searchQuery: string; activeSearchMatch: boolean; expanded: boolean; onToggleExpanded: () => void }) {
+function MessageBody({
+    text,
+    searchQuery,
+    activeSearchMatch,
+    expanded,
+    onToggleExpanded,
+}: {
+    text: string;
+    searchQuery: string;
+    activeSearchMatch: boolean;
+    expanded: boolean;
+    onToggleExpanded: () => void;
+}) {
     const words = text.trim().split(/\s+/).filter(Boolean);
-    const shouldTruncate = !activeSearchMatch && (words.length > COLLAPSED_MESSAGE_WORD_LIMIT || text.length > COLLAPSED_MESSAGE_CHAR_LIMIT);
+    const shouldTruncate =
+        !activeSearchMatch &&
+        (words.length > COLLAPSED_MESSAGE_WORD_LIMIT ||
+            text.length > COLLAPSED_MESSAGE_CHAR_LIMIT);
 
     return (
         <div className="pr-6">
-            <p className={`app-message-text text-sm leading-6 ${shouldTruncate && !expanded ? 'app-message-text-collapsed' : ''}`}>
-                {activeSearchMatch ? <HighlightedText text={text} query={searchQuery} /> : text}
+            <p
+                className={`app-message-text text-sm leading-6 ${shouldTruncate && !expanded ? 'app-message-text-collapsed' : ''}`}
+            >
+                {activeSearchMatch ? (
+                    <HighlightedText text={text} query={searchQuery} />
+                ) : (
+                    text
+                )}
             </p>
             {shouldTruncate ? (
                 <button
                     type="button"
                     onClick={onToggleExpanded}
-                    className="app-read-more mt-1 text-xs font-semibold transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--app-focus) focus-visible:ring-offset-2 focus-visible:ring-offset-(--app-chat-in)"
+                    className="app-read-more mt-1 text-xs font-semibold transition hover:underline focus-visible:ring-2 focus-visible:ring-(--app-focus) focus-visible:ring-offset-2 focus-visible:ring-offset-(--app-chat-in) focus-visible:outline-none"
                 >
                     {expanded ? 'Leer menos' : 'Leer más'}
                 </button>
@@ -2073,6 +3240,7 @@ function MessageBody({ text, searchQuery, activeSearchMatch, expanded, onToggleE
 
 function MessageActionsPanel({
     message,
+    reference,
     mode,
     editBody,
     processing,
@@ -2080,9 +3248,11 @@ function MessageActionsPanel({
     onEditBodyChange,
     onSubmitEdit,
     onDelete,
+    onReply,
     onClose,
 }: {
     message: MessageItem;
+    reference: Element | null;
     mode: 'list' | 'edit' | 'delete';
     editBody: string;
     processing: boolean;
@@ -2090,71 +3260,162 @@ function MessageActionsPanel({
     onEditBodyChange: (value: string) => void;
     onSubmitEdit: (event: FormEvent<HTMLFormElement>) => void;
     onDelete: () => void;
+    onReply: () => void;
     onClose: () => void;
 }) {
+    const { context, floatingStyles, refs } = useFloating({
+        open: true,
+        onOpenChange(nextOpen, event, reason) {
+            if (reason === 'escape-key') {
+                event?.preventDefault();
+            }
+
+            if (!nextOpen) {
+                onClose();
+            }
+        },
+        placement: 'bottom-end',
+        middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+        whileElementsMounted: autoUpdate,
+    });
+    const dismiss = useDismiss(context, {
+        outsidePressEvent: 'pointerdown',
+        capture: { escapeKey: true },
+    });
+    const role = useRole(context, { role: 'dialog' });
+    const { getFloatingProps } = useInteractions([dismiss, role]);
+
+    useEffect(() => {
+        refs.setReference(reference);
+    }, [reference, refs]);
+
+    if (!reference) {
+        return null;
+    }
+
     return (
-        <div className="absolute right-1 bottom-[calc(100%+0.5rem)] z-20 w-60 max-w-[calc(100vw-2rem)]" role="dialog" aria-label="Opciones del mensaje">
-            <div className="app-surface rounded-2xl border p-2 text-sm shadow-2xl shadow-black/20">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                    <h3 className="font-semibold pl-1">Opciones del mensaje</h3>
-                    <button type="button" onClick={onClose} className="app-muted grid size-8 place-items-center rounded-full transition hover:bg-(--app-control-hover) hover:text-(--app-accent)" aria-label="Cerrar opciones">
-                        <X className="size-4" />
-                    </button>
+        <FloatingPortal>
+            <FloatingFocusManager
+                context={context}
+                modal={false}
+                returnFocus={false}
+            >
+                <div
+                    ref={refs.setFloating}
+                    style={floatingStyles}
+                    className="app-surface z-40 max-h-[calc(100vh-1rem)] w-60 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-2xl border p-2 text-sm shadow-2xl shadow-black/20"
+                    aria-label="Opciones del mensaje"
+                    {...getFloatingProps()}
+                >
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                        <h3 className="pl-1 font-semibold">
+                            Opciones del mensaje
+                        </h3>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="app-muted grid size-8 place-items-center rounded-full transition hover:bg-(--app-control-hover) hover:text-(--app-accent)"
+                            aria-label="Cerrar opciones"
+                        >
+                            <X className="size-4" />
+                        </button>
+                    </div>
+
+                    {mode === 'list' ? (
+                        <div className="space-y-1">
+                            {canReplyToMessage(message) ? (
+                                <button
+                                    type="button"
+                                    onClick={onReply}
+                                    className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-(--app-control-hover)"
+                                >
+                                    <Reply className="size-3 text-(--app-accent)" />
+                                    <span>Responder</span>
+                                </button>
+                            ) : null}
+                            {message.can_edit ? (
+                                <button
+                                    type="button"
+                                    onClick={() => onModeChange('edit')}
+                                    className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-(--app-control-hover)"
+                                >
+                                    <Pencil className="size-3 text-(--app-accent)" />
+                                    <span>Editar</span>
+                                </button>
+                            ) : null}
+                            {message.can_delete ? (
+                                <button
+                                    type="button"
+                                    onClick={() => onModeChange('delete')}
+                                    className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-(--app-danger) transition hover:bg-(--app-danger-bg)"
+                                >
+                                    <Trash2 className="size-3" />
+                                    <span>Eliminar</span>
+                                </button>
+                            ) : null}
+                        </div>
+                    ) : null}
+
+                    {mode === 'edit' ? (
+                        <form onSubmit={onSubmitEdit} className="space-y-3">
+                            <textarea
+                                value={editBody}
+                                onChange={(event) =>
+                                    onEditBodyChange(event.target.value)
+                                }
+                                maxLength={4000}
+                                rows={5}
+                                className="app-input-control h-32 w-full resize-none rounded-xl border border-(--app-control-border) px-3 py-2 text-sm outline-none focus:border-(--app-focus)"
+                            />
+                            <div className="flex items-center justify-end gap-2 text-xs font-semibold">
+                                <p className="app-faint text-right text-xs">
+                                    {editBody.length}/2000
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => onModeChange('list')}
+                                    className="app-muted rounded-full px-2 py-1 transition hover:bg-(--app-control-hover)"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={
+                                        processing || editBody.trim() === ''
+                                    }
+                                    className="app-button-primary rounded-full px-2 py-1 transition disabled:opacity-50"
+                                >
+                                    Guardar
+                                </button>
+                            </div>
+                        </form>
+                    ) : null}
+
+                    {mode === 'delete' ? (
+                        <div className="app-alert-danger space-y-4 rounded-xl border p-4">
+                            <p className="text-sm">¿Eliminar este mensaje?</p>
+                            <div className="flex justify-end gap-2 text-xs font-semibold">
+                                <button
+                                    type="button"
+                                    onClick={() => onModeChange('list')}
+                                    className="rounded-full px-2 py-1 transition hover:bg-(--app-control-hover)"
+                                >
+                                    Cancelar
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={onDelete}
+                                    disabled={processing}
+                                    className="rounded-full bg-(--app-danger) px-2 py-1 text-white transition disabled:opacity-50"
+                                >
+                                    Eliminar
+                                </button>
+                            </div>
+                        </div>
+                    ) : null}
                 </div>
-
-                {mode === 'list' ? (
-                    <div className="space-y-1">
-                        {message.can_edit ? (
-                            <button type="button" onClick={() => onModeChange('edit')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-(--app-control-hover)">
-                                <Pencil className="size-3 text-(--app-accent)" />
-                                <span>Editar</span>
-                            </button>
-                        ) : null}
-                        {message.can_delete ? (
-                            <button type="button" onClick={() => onModeChange('delete')} className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-(--app-danger) transition hover:bg-(--app-danger-bg)">
-                                <Trash2 className="size-3" />
-                                <span>Eliminar</span>
-                            </button>
-                        ) : null}
-                    </div>
-                ) : null}
-
-                {mode === 'edit' ? (
-                    <form onSubmit={onSubmitEdit} className="space-y-3">
-                        <textarea
-                            value={editBody}
-                            onChange={(event) => onEditBodyChange(event.target.value)}
-                            maxLength={4000}
-                            rows={5}
-                            className="app-input-control h-32 w-full resize-none rounded-xl border border-(--app-control-border) px-3 py-2 text-sm outline-none focus:border-(--app-focus)"
-                        />
-                        <div className="flex justify-end gap-2 text-xs font-semibold items-center">
-                            <p className="app-faint text-right text-xs">{editBody.length}/2000</p>
-                            <button type="button" onClick={() => onModeChange('list')} className="app-muted rounded-full px-2 py-1 transition hover:bg-(--app-control-hover)">
-                                Cancelar
-                            </button>
-                            <button type="submit" disabled={processing || editBody.trim() === ''} className="app-button-primary rounded-full px-2 py-1 transition disabled:opacity-50">
-                                Guardar
-                            </button>
-                        </div>
-                    </form>
-                ) : null}
-
-                {mode === 'delete' ? (
-                    <div className="app-alert-danger space-y-4 rounded-xl border p-4">
-                        <p className="text-sm">¿Eliminar este mensaje?</p>
-                        <div className="flex justify-end gap-2 text-xs font-semibold">
-                            <button type="button" onClick={() => onModeChange('list')} className="rounded-full px-2 py-1 transition hover:bg-(--app-control-hover)">
-                                Cancelar
-                            </button>
-                            <button type="button" onClick={onDelete} disabled={processing} className="rounded-full bg-(--app-danger) px-2 py-1 text-white transition disabled:opacity-50">
-                                Eliminar
-                            </button>
-                        </div>
-                    </div>
-                ) : null}
-            </div>
-        </div>
+            </FloatingFocusManager>
+        </FloatingPortal>
     );
 }
 
@@ -2167,14 +3428,29 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
 
     const parts = text.split(new RegExp(`(${escapeRegExp(needle)})`, 'gi'));
 
-    return parts.map((part, index) => part.toLocaleLowerCase() === needle.toLocaleLowerCase() ? (
-        <mark key={`${part}-${index}`} className="app-search-highlight rounded px-0.5">
-            {part}
-        </mark>
-    ) : part);
+    return parts.map((part, index) =>
+        part.toLocaleLowerCase() === needle.toLocaleLowerCase() ? (
+            <mark
+                key={`${part}-${index}`}
+                className="app-search-highlight rounded px-0.5"
+            >
+                {part}
+            </mark>
+        ) : (
+            part
+        ),
+    );
 }
 
-function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { message: MessageItem; onAudioTimeLabelChange?: (label: string) => void; onOpenImage: (image: ImagePreview) => void }) {
+function MessageMedia({
+    message,
+    onAudioTimeLabelChange,
+    onOpenImage,
+}: {
+    message: MessageItem;
+    onAudioTimeLabelChange?: (label: string) => void;
+    onOpenImage: (image: ImagePreview) => void;
+}) {
     const [imageLoadFailed, setImageLoadFailed] = useState(false);
 
     useEffect(() => {
@@ -2190,8 +3466,11 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
     }
 
     if (!message.media_url) {
-        const status = message.media_download_status ? translateMediaStatus(message.media_download_status) : 'pendiente';
-        const mediaError = message.media_error ?? unavailableMediaLabel(message.type);
+        const status = message.media_download_status
+            ? translateMediaStatus(message.media_download_status)
+            : 'pendiente';
+        const mediaError =
+            message.media_error ?? unavailableMediaLabel(message.type);
 
         return (
             <div className="app-surface-soft mb-1 rounded-lg border px-3 py-2 text-sm">
@@ -2209,11 +3488,23 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
         return (
             <button
                 type="button"
-                onClick={() => onOpenImage({ id: message.id, url: message.media_url!, filename: message.media_filename ?? 'imagen' })}
+                onClick={() =>
+                    onOpenImage({
+                        id: message.id,
+                        url: message.media_url!,
+                        filename: message.media_filename ?? 'imagen',
+                    })
+                }
                 className="mb-2 block overflow-hidden rounded-lg text-left"
                 aria-label="Abrir imagen"
             >
-                <img src={message.media_url} alt={message.media_filename ?? 'Imagen adjunta'} className="max-h-80 object-contain transition hover:brightness-110" loading="lazy" onError={() => setImageLoadFailed(true)} />
+                <img
+                    src={message.media_url}
+                    alt={message.media_filename ?? 'Imagen adjunta'}
+                    className="max-h-80 object-contain transition hover:brightness-110"
+                    loading="lazy"
+                    onError={() => setImageLoadFailed(true)}
+                />
             </button>
         );
     }
@@ -2221,20 +3512,39 @@ function MessageMedia({ message, onAudioTimeLabelChange, onOpenImage }: { messag
     if (message.type === 'video') {
         return (
             <video controls className="mb-2 max-h-80 rounded-lg">
-                <source src={message.media_url} type={message.media_mime_type ?? undefined} />
+                <source
+                    src={message.media_url}
+                    type={message.media_mime_type ?? undefined}
+                />
             </video>
         );
     }
 
     if (message.type === 'audio') {
-        return <AudioMessagePlayer message={message} onTimeLabelChange={onAudioTimeLabelChange} />;
+        return (
+            <AudioMessagePlayer
+                message={message}
+                onTimeLabelChange={onAudioTimeLabelChange}
+            />
+        );
     }
 
     return (
-        <a href={message.media_url} target="_blank" rel="noreferrer" className="app-surface-soft mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition hover:bg-(--app-control-hover)">
+        <a
+            href={message.media_url}
+            target="_blank"
+            rel="noreferrer"
+            className="app-surface-soft mb-2 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition hover:bg-(--app-control-hover)"
+        >
             <Paperclip className="size-4" />
-            <span className="truncate">{message.media_filename ?? 'Documento adjunto'}</span>
-            {message.media_size_bytes ? <span className="app-muted shrink-0 text-xs">{formatBytes(message.media_size_bytes)}</span> : null}
+            <span className="truncate">
+                {message.media_filename ?? 'Documento adjunto'}
+            </span>
+            {message.media_size_bytes ? (
+                <span className="app-muted shrink-0 text-xs">
+                    {formatBytes(message.media_size_bytes)}
+                </span>
+            ) : null}
         </a>
     );
 }
@@ -2246,7 +3556,12 @@ function ContactMessageCard({ message }: { message: MessageItem }) {
     return (
         <div className="app-surface-soft mb-2 flex min-w-60 items-center gap-3 rounded-lg border px-3 py-2 text-sm">
             {contact.avatarUrl ? (
-                <img src={contact.avatarUrl} alt={`Foto de perfil de ${name}`} className="size-10 shrink-0 rounded-full border border-(--app-border) object-cover" loading="lazy" />
+                <img
+                    src={contact.avatarUrl}
+                    alt={`Foto de perfil de ${name}`}
+                    className="size-10 shrink-0 rounded-full border border-(--app-border) object-cover"
+                    loading="lazy"
+                />
             ) : (
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) font-semibold">
                     {initials(name)}
@@ -2254,7 +3569,11 @@ function ContactMessageCard({ message }: { message: MessageItem }) {
             )}
             <span className="min-w-0 flex-1">
                 <span className="block truncate font-semibold">{name}</span>
-                {contact.phone ? <span className="app-muted mt-0.5 block truncate text-xs">{contact.phone}</span> : null}
+                {contact.phone ? (
+                    <span className="app-muted mt-0.5 block truncate text-xs">
+                        {contact.phone}
+                    </span>
+                ) : null}
                 {/* {contact.organization ? <span className="app-muted mt-0.5 block truncate text-xs">{contact.organization}</span> : null} */}
                 {/* {contact.count > 1 ? <span className="app-faint mt-1 block text-xs">+{contact.count - 1} contacto{contact.count - 1 === 1 ? '' : 's'} más</span> : null} */}
             </span>
@@ -2264,24 +3583,40 @@ function ContactMessageCard({ message }: { message: MessageItem }) {
 
 function ImageUnavailableFallback({ compact = false }: { compact?: boolean }) {
     return (
-        <div className={`app-image-fallback ${compact ? 'app-image-fallback-compact' : 'mb-2 rounded-lg border px-4 py-6'}`} role="img" aria-label="Imagen no disponible">
+        <div
+            className={`app-image-fallback ${compact ? 'app-image-fallback-compact' : 'mb-2 rounded-lg border px-4 py-6'}`}
+            role="img"
+            aria-label="Imagen no disponible"
+        >
             <p className="font-semibold">Imagen no disponible</p>
         </div>
     );
 }
 
-function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageItem; onTimeLabelChange?: (label: string) => void }) {
+function AudioMessagePlayer({
+    message,
+    onTimeLabelChange,
+}: {
+    message: MessageItem;
+    onTimeLabelChange?: (label: string) => void;
+}) {
     const audioRef = useRef<HTMLAudioElement>(null);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [duration, setDuration] = useState(() => audioMetadataDuration(message.media_metadata));
+    const [duration, setDuration] = useState(0);
     const [currentTime, setCurrentTime] = useState(0);
-    const progress = duration > 0 ? Math.min(currentTime / duration, 1) : 0;
+    const hasSeekableDuration = Number.isFinite(duration) && duration > 0;
+    const displayedCurrentTime = hasSeekableDuration
+        ? Math.min(Math.max(currentTime, 0), duration)
+        : 0;
+    const progress = hasSeekableDuration
+        ? displayedCurrentTime / duration
+        : 0;
 
     useEffect(() => {
         setIsPlaying(false);
-        setDuration(audioMetadataDuration(message.media_metadata));
+        setDuration(0);
         setCurrentTime(0);
-    }, [message.media_metadata, message.media_url]);
+    }, [message.media_url]);
 
     useEffect(() => {
         const audio = audioRef.current;
@@ -2292,41 +3627,10 @@ function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageIt
     }, []);
 
     useEffect(() => {
-        onTimeLabelChange?.(formatAudioTime(isPlaying ? currentTime : duration));
+        onTimeLabelChange?.(
+            formatAudioTime(isPlaying ? currentTime : duration),
+        );
     }, [currentTime, duration, isPlaying, onTimeLabelChange]);
-
-    useEffect(() => {
-        if (!message.media_url || duration > 0) {
-            return;
-        }
-
-        const AudioContextConstructor = window.AudioContext ?? (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-
-        if (!AudioContextConstructor) {
-            return;
-        }
-
-        const abortController = new AbortController();
-        const audioContext = new AudioContextConstructor();
-
-        fetch(message.media_url, { credentials: 'same-origin', signal: abortController.signal })
-            .then((response) => response.arrayBuffer())
-            .then((buffer) => audioContext.decodeAudioData(buffer))
-            .then((decodedAudio) => {
-                if (!abortController.signal.aborted && Number.isFinite(decodedAudio.duration) && decodedAudio.duration > 0) {
-                    setDuration(decodedAudio.duration);
-                }
-            })
-            .catch(() => undefined)
-            .finally(() => {
-                void audioContext.close().catch(() => undefined);
-            });
-
-        return () => {
-            abortController.abort();
-            void audioContext.close().catch(() => undefined);
-        };
-    }, [duration, message.media_url]);
 
     const updateDuration = (audio: HTMLAudioElement) => {
         if (Number.isFinite(audio.duration) && audio.duration > 0) {
@@ -2342,11 +3646,15 @@ function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageIt
         }
 
         if (audio.paused) {
-            document.querySelectorAll<HTMLAudioElement>('audio[data-chat-audio="true"]').forEach((otherAudio) => {
-                if (otherAudio !== audio) {
-                    otherAudio.pause();
-                }
-            });
+            document
+                .querySelectorAll<HTMLAudioElement>(
+                    'audio[data-chat-audio="true"]',
+                )
+                .forEach((otherAudio) => {
+                    if (otherAudio !== audio) {
+                        otherAudio.pause();
+                    }
+                });
 
             void audio.play();
             return;
@@ -2355,16 +3663,35 @@ function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageIt
         audio.pause();
     };
 
+    const seekTo = (nextTime: number) => {
+        const audio = audioRef.current;
+
+        if (!audio || !hasSeekableDuration) {
+            return;
+        }
+
+        const clampedTime = Math.min(Math.max(nextTime, 0), duration);
+
+        audio.currentTime = clampedTime;
+        setCurrentTime(clampedTime);
+    };
+
     return (
         <div className="app-audio-player mb-1">
             <audio
                 data-chat-audio="true"
                 ref={audioRef}
                 preload="auto"
-                onLoadedMetadata={(event) => updateDuration(event.currentTarget)}
+                onLoadedMetadata={(event) =>
+                    updateDuration(event.currentTarget)
+                }
                 onLoadedData={(event) => updateDuration(event.currentTarget)}
-                onDurationChange={(event) => updateDuration(event.currentTarget)}
-                onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                onDurationChange={(event) =>
+                    updateDuration(event.currentTarget)
+                }
+                onTimeUpdate={(event) =>
+                    setCurrentTime(event.currentTarget.currentTime)
+                }
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onEnded={() => {
@@ -2372,30 +3699,82 @@ function AudioMessagePlayer({ message, onTimeLabelChange }: { message: MessageIt
                     setCurrentTime(0);
                 }}
             >
-                <source src={message.media_url!} type={message.media_mime_type ?? undefined} />
+                <source
+                    src={message.media_url!}
+                    type={message.media_mime_type ?? undefined}
+                />
             </audio>
-            <button type="button" onClick={togglePlayback} className="app-audio-button" aria-label={isPlaying ? 'Pausar audio' : 'Reproducir audio'}>
-                {isPlaying ? <Pause className="size-4" /> : <Play className="size-4 translate-x-px" />}
+            <button
+                type="button"
+                onClick={togglePlayback}
+                className="app-audio-button"
+                aria-label={isPlaying ? 'Pausar audio' : 'Reproducir audio'}
+            >
+                {isPlaying ? (
+                    <Pause className="size-4" />
+                ) : (
+                    <Play className="size-4 translate-x-px" />
+                )}
             </button>
-            <div className="min-w-0 flex-1">
+            <div className="app-audio-timeline min-w-0 flex-1">
                 <div className="app-audio-waveform" aria-hidden="true">
                     {Array.from({ length: 24 }, (_, index) => (
                         <span
                             key={index}
-                            className={index / 23 <= progress ? 'app-audio-bar app-audio-bar-active' : 'app-audio-bar'}
+                            className={
+                                index / 23 <= progress
+                                    ? 'app-audio-bar app-audio-bar-active'
+                                    : 'app-audio-bar'
+                            }
                             style={{ height: `${6 + ((index * 7) % 14)}px` }}
                         />
                     ))}
                 </div>
+                <input
+                    type="range"
+                    min="0"
+                    max={hasSeekableDuration ? duration : 0}
+                    step="0.01"
+                    value={displayedCurrentTime}
+                    disabled={!hasSeekableDuration}
+                    onChange={(event) =>
+                        seekTo(Number(event.currentTarget.value))
+                    }
+                    className="app-audio-seek"
+                    aria-label="Posición del audio"
+                    aria-valuetext={`${formatAudioTime(displayedCurrentTime)} de ${formatAudioTime(
+                        hasSeekableDuration ? duration : 0,
+                    )}`}
+                />
             </div>
         </div>
     );
 }
 
-function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNext, onClose }: { image: ImagePreview; positionLabel: string | null; canNavigate: boolean; onPrevious: () => void; onNext: () => void; onClose: () => void }) {
+function ImageViewerModal({
+    image,
+    positionLabel,
+    canNavigate,
+    onPrevious,
+    onNext,
+    onClose,
+}: {
+    image: ImagePreview;
+    positionLabel: string | null;
+    canNavigate: boolean;
+    onPrevious: () => void;
+    onNext: () => void;
+    onClose: () => void;
+}) {
     const [scale, setScale] = useState(1);
     const [position, setPosition] = useState({ x: 0, y: 0 });
-    const dragStartRef = useRef<{ pointerId: number; x: number; y: number; positionX: number; positionY: number } | null>(null);
+    const dragStartRef = useRef<{
+        pointerId: number;
+        x: number;
+        y: number;
+        positionX: number;
+        positionY: number;
+    } | null>(null);
 
     useEffect(() => {
         setScale(1);
@@ -2427,12 +3806,16 @@ function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNex
 
         window.addEventListener('keydown', handleViewerKeyDown, true);
 
-        return () => window.removeEventListener('keydown', handleViewerKeyDown, true);
+        return () =>
+            window.removeEventListener('keydown', handleViewerKeyDown, true);
     }, [canNavigate, onClose, onNext, onPrevious]);
 
     const zoom = (direction: 'in' | 'out') => {
         setScale((currentScale) => {
-            const nextScale = direction === 'in' ? Math.min(currentScale + 0.25, 4) : Math.max(currentScale - 0.25, 1);
+            const nextScale =
+                direction === 'in'
+                    ? Math.min(currentScale + 0.25, 4)
+                    : Math.max(currentScale - 0.25, 1);
 
             if (nextScale === 1) {
                 setPosition({ x: 0, y: 0 });
@@ -2477,29 +3860,72 @@ function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNex
     };
 
     return (
-        <div className="theme-preserve-dark fixed inset-0 z-50 flex flex-col bg-black/90 text-white" role="dialog" aria-modal="true" aria-label="Vista ampliada de imagen">
+        <div
+            className="theme-preserve-dark fixed inset-0 z-50 flex flex-col bg-black/90 text-white"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Vista ampliada de imagen"
+        >
             <header className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
                 <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{image.filename}</p>
-                    {positionLabel ? <p className="mt-0.5 text-xs text-zinc-400">{positionLabel}</p> : null}
+                    <p className="truncate text-sm font-medium">
+                        {image.filename}
+                    </p>
+                    {positionLabel ? (
+                        <p className="mt-0.5 text-xs text-zinc-400">
+                            {positionLabel}
+                        </p>
+                    ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                    <button type="button" onClick={onPrevious} disabled={!canNavigate} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Imagen anterior">
+                    <button
+                        type="button"
+                        onClick={onPrevious}
+                        disabled={!canNavigate}
+                        className="grid size-10 place-items-center rounded-full transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="Imagen anterior"
+                    >
                         <ChevronLeft className="size-5" />
                     </button>
-                    <button type="button" onClick={onNext} disabled={!canNavigate} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40" aria-label="Imagen siguiente">
+                    <button
+                        type="button"
+                        onClick={onNext}
+                        disabled={!canNavigate}
+                        className="grid size-10 place-items-center rounded-full transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label="Imagen siguiente"
+                    >
                         <ChevronRight className="size-5" />
                     </button>
-                    <a href={image.url} download={image.filename} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10" aria-label="Descargar imagen">
+                    <a
+                        href={image.url}
+                        download={image.filename}
+                        className="grid size-10 place-items-center rounded-full transition hover:bg-white/10"
+                        aria-label="Descargar imagen"
+                    >
                         <Download className="size-5" />
                     </a>
-                    <button type="button" onClick={() => zoom('out')} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10" aria-label="Alejar imagen">
+                    <button
+                        type="button"
+                        onClick={() => zoom('out')}
+                        className="grid size-10 place-items-center rounded-full transition hover:bg-white/10"
+                        aria-label="Alejar imagen"
+                    >
                         <ZoomOut className="size-5" />
                     </button>
-                    <button type="button" onClick={() => zoom('in')} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10" aria-label="Acercar imagen">
+                    <button
+                        type="button"
+                        onClick={() => zoom('in')}
+                        className="grid size-10 place-items-center rounded-full transition hover:bg-white/10"
+                        aria-label="Acercar imagen"
+                    >
                         <ZoomIn className="size-5" />
                     </button>
-                    <button type="button" onClick={onClose} className="grid size-10 place-items-center rounded-full transition hover:bg-white/10" aria-label="Cerrar imagen">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="grid size-10 place-items-center rounded-full transition hover:bg-white/10"
+                        aria-label="Cerrar imagen"
+                    >
                         <X className="size-5" />
                     </button>
                 </div>
@@ -2515,8 +3941,10 @@ function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNex
                     src={image.url}
                     alt={image.filename}
                     draggable={false}
-                    className="max-h-full max-w-full select-none object-contain transition-transform duration-75 p-4"
-                    style={{ transform: `translate(${position.x}px, ${position.y}px) scale(${scale})` }}
+                    className="max-h-full max-w-full object-contain p-4 transition-transform duration-75 select-none"
+                    style={{
+                        transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+                    }}
                 />
             </div>
         </div>
@@ -2525,7 +3953,10 @@ function ImageViewerModal({ image, positionLabel, canNavigate, onPrevious, onNex
 
 function EmptyConversation() {
     return (
-        <div className="grid h-full place-items-center p-8 text-center" style={CHAT_BACKGROUND_STYLE}>
+        <div
+            className="grid h-full place-items-center p-8 text-center"
+            style={CHAT_BACKGROUND_STYLE}
+        >
             {/* <div className="app-surface-soft max-w-md rounded-2xl border p-8">
                 <p className="text-sm leading-6">
                     Elegí un chat para ver los mensajes.
@@ -2569,7 +4000,11 @@ function SearchForm({
                 className="w-full bg-transparent text-sm text-(--app-control-text) outline-none placeholder:text-(--app-faint)"
             />
             {value.trim() !== '' ? (
-                <button type="button" onClick={onClear} className="app-muted text-xs font-medium transition hover:text-(--app-accent)">
+                <button
+                    type="button"
+                    onClick={onClear}
+                    className="app-muted text-xs font-medium transition hover:text-(--app-accent)"
+                >
                     Limpiar
                 </button>
             ) : null}
@@ -2586,7 +4021,12 @@ function maintenanceStatusDescription(maintenance: MaintenanceInfo): string {
     }
 
     if (maintenance.status === 'running') {
-        if (maintenance.started_at && maintenance.duration_seconds !== null && maintenance.duration_seconds >= maintenance.sync_maintenance_stale_minutes * 60) {
+        if (
+            maintenance.started_at &&
+            maintenance.duration_seconds !== null &&
+            maintenance.duration_seconds >=
+                maintenance.sync_maintenance_stale_minutes * 60
+        ) {
             return 'La sincronización parece demorada. Si se interrumpió, el sistema la marcará como fallida para permitir un nuevo intento.';
         }
 
@@ -2657,7 +4097,10 @@ function formatMaintenanceDateTime(value: string): string {
     return `${formattedDate}, a las ${formattedTime}`;
 }
 
-function formatDate(value: string, options: Intl.DateTimeFormatOptions): string {
+function formatDate(
+    value: string,
+    options: Intl.DateTimeFormatOptions,
+): string {
     const date = new Date(value);
 
     if (Number.isNaN(date.getTime())) {
@@ -2686,9 +4129,16 @@ function formatTime(value: string, includeSeconds = false): string {
     });
 }
 
-function compactQuery(query: Record<string, string | number | null | undefined>): Record<string, string | number> {
+function compactQuery(
+    query: Record<string, string | number | null | undefined>,
+): Record<string, string | number> {
     return Object.fromEntries(
-        Object.entries(query).filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== ''),
+        Object.entries(query).filter(
+            ([, value]) =>
+                value !== null &&
+                value !== undefined &&
+                String(value).trim() !== '',
+        ),
     ) as Record<string, string | number>;
 }
 
@@ -2696,7 +4146,9 @@ function normalizeSearch(value: string): string {
     return value.trim();
 }
 
-function incomingConversationSoundKey(conversation: ConversationItem): string | null {
+function incomingConversationSoundKey(
+    conversation: ConversationItem,
+): string | null {
     if (conversation.last_message_at === null) {
         return null;
     }
@@ -2707,7 +4159,13 @@ function incomingConversationSoundKey(conversation: ConversationItem): string | 
         return null;
     }
 
-    return [conversation.external_id, timestamp, conversation.last_message_preview ?? conversation.last_message_body ?? ''].join('|');
+    return [
+        conversation.external_id,
+        timestamp,
+        conversation.last_message_preview ??
+            conversation.last_message_body ??
+            '',
+    ].join('|');
 }
 
 function conversationHref(chatId: string, filters: Props['filters']): string {
@@ -2723,16 +4181,22 @@ function conversationHref(chatId: string, filters: Props['filters']): string {
 }
 
 function conversationTitle(conversation: ConversationItem): string {
-    return conversation.title ?? conversation.contact_name ?? conversation.external_id;
+    return (
+        conversation.title ??
+        conversation.contact_name ??
+        conversation.external_id
+    );
 }
 
 function initials(value: string): string {
-    return value
-        .split(' ')
-        .filter(Boolean)
-        .slice(0, 2)
-        .map((part) => part[0]?.toUpperCase())
-        .join('') || '?';
+    return (
+        value
+            .split(' ')
+            .filter(Boolean)
+            .slice(0, 2)
+            .map((part) => part[0]?.toUpperCase())
+            .join('') || '?'
+    );
 }
 
 function generateIdempotencyKey(): string {
@@ -2805,14 +4269,25 @@ function formatMessageDateDivider(value: string | null): string {
     return date.toLocaleDateString('es-AR', {
         day: '2-digit',
         month: 'long',
-        year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
+        year:
+            date.getFullYear() === today.getFullYear() ? undefined : 'numeric',
     });
 }
 
-function audioMetadataDuration(metadata: Record<string, unknown> | null): number {
-    const rawDuration = metadata?.duration ?? metadata?.durationSeconds ?? metadata?.seconds ?? metadata?.length;
+function audioMetadataDuration(
+    metadata: Record<string, unknown> | null,
+): number {
+    const rawDuration =
+        metadata?.duration ??
+        metadata?.durationSeconds ??
+        metadata?.seconds ??
+        metadata?.length;
 
-    if (typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0) {
+    if (
+        typeof rawDuration === 'number' &&
+        Number.isFinite(rawDuration) &&
+        rawDuration > 0
+    ) {
         return rawDuration;
     }
 
@@ -2827,6 +4302,35 @@ function audioMetadataDuration(metadata: Record<string, unknown> | null): number
     return 0;
 }
 
+function reactionBadgesFor(
+    metadata: MessageMetadata | null,
+    acceptedReactionEmoji: string | null,
+): string[] {
+    const reactions = metadata?.reactions;
+
+    const emojis = new Set<string>();
+
+    Object.values(reactions ?? {}).forEach((emoji) => {
+        if (typeof emoji === 'string' && emoji !== '') {
+            emojis.add(emoji);
+        }
+    });
+
+    if (acceptedReactionEmoji !== null && acceptedReactionEmoji !== '') {
+        emojis.add(acceptedReactionEmoji);
+    }
+
+    return Array.from(emojis);
+}
+
+function reactionSnapshotSignature(metadata: MessageMetadata | null): string {
+    return JSON.stringify(
+        Object.entries(metadata?.reactions ?? {}).sort(([left], [right]) =>
+            left.localeCompare(right),
+        ),
+    );
+}
+
 type ContactMessageMetadata = {
     name: string | null;
     phone: string | null;
@@ -2837,18 +4341,44 @@ type ContactMessageMetadata = {
 
 function contactMessageMetadata(message: MessageItem): ContactMessageMetadata {
     const contacts = message.media_metadata?.contacts;
-    const contact = Array.isArray(contacts) && contacts.length > 0 ? contacts[0] : message.media_metadata?.contact;
+    const contact =
+        Array.isArray(contacts) && contacts.length > 0
+            ? contacts[0]
+            : message.media_metadata?.contact;
     const count = Array.isArray(contacts) ? contacts.length : 1;
 
     if (!contact || typeof contact !== 'object') {
-        return { name: message.body, phone: null, organization: null, avatarUrl: null, count: 1 };
+        return {
+            name: message.body,
+            phone: null,
+            organization: null,
+            avatarUrl: null,
+            count: 1,
+        };
     }
 
     const metadata = contact as Record<string, unknown>;
-    const name = typeof metadata.name === 'string' && metadata.name.trim() !== '' ? metadata.name : message.body;
-    const phone = typeof metadata.phone === 'string' && metadata.phone.trim() !== '' ? metadata.phone : null;
-    const organization = typeof metadata.organization === 'string' && metadata.organization.trim() !== '' ? metadata.organization : null;
-    const avatarUrl = firstString(metadata.avatar_url, metadata.avatarUrl, metadata.profile_photo_url, metadata.profilePhotoUrl, metadata.photo_url, metadata.photoUrl);
+    const name =
+        typeof metadata.name === 'string' && metadata.name.trim() !== ''
+            ? metadata.name
+            : message.body;
+    const phone =
+        typeof metadata.phone === 'string' && metadata.phone.trim() !== ''
+            ? metadata.phone
+            : null;
+    const organization =
+        typeof metadata.organization === 'string' &&
+        metadata.organization.trim() !== ''
+            ? metadata.organization
+            : null;
+    const avatarUrl = firstString(
+        metadata.avatar_url,
+        metadata.avatarUrl,
+        metadata.profile_photo_url,
+        metadata.profilePhotoUrl,
+        metadata.photo_url,
+        metadata.photoUrl,
+    );
 
     return { name, phone, organization, avatarUrl, count };
 }
@@ -2893,8 +4423,15 @@ function MessageStatusIndicator({ status }: { status: string }) {
         const label = statusLabels[statusKey];
 
         return (
-            <span title={label} aria-label={label} className="inline-flex items-center gap-1 font-medium text-(--app-faint)">
-                <span role="img" className="inline-flex size-3.5 items-center justify-center rounded-full text-[9px] leading-none">
+            <span
+                title={label}
+                aria-label={label}
+                className="inline-flex items-center gap-1 font-medium text-(--app-faint)"
+            >
+                <span
+                    role="img"
+                    className="inline-flex size-3.5 items-center justify-center rounded-full text-[9px] leading-none"
+                >
                     ◷
                 </span>
             </span>
@@ -2903,7 +4440,12 @@ function MessageStatusIndicator({ status }: { status: string }) {
 
     if (statusKey === 'failed') {
         return (
-            <span title={statusLabels.failed} aria-label={statusLabels.failed} role="img" className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-danger) text-[10px] font-bold leading-none text-(--app-danger)">
+            <span
+                title={statusLabels.failed}
+                aria-label={statusLabels.failed}
+                role="img"
+                className="inline-flex size-3.5 items-center justify-center rounded-full border border-(--app-danger) text-[10px] leading-none font-bold text-(--app-danger)"
+            >
                 !
             </span>
         );
@@ -2912,7 +4454,11 @@ function MessageStatusIndicator({ status }: { status: string }) {
     const label = statusLabels[statusKey] ?? status;
 
     return (
-        <span title={label} aria-label={label} className="inline-flex items-center font-medium text-(--app-faint)">
+        <span
+            title={label}
+            aria-label={label}
+            className="inline-flex items-center font-medium text-(--app-faint)"
+        >
             {label}
         </span>
     );
@@ -2927,6 +4473,72 @@ function mediaLabel(type: string): string {
     };
 
     return labels[type] ?? 'Archivo';
+}
+
+function replySenderLabel(
+    message: MessageItem,
+    conversation: ConversationItem,
+): string | null {
+    return message.direction === 'outbound' ? 'Vos' : conversation.title;
+}
+
+function replyPreviewLabel(message: MessageItem): string {
+    const body = message.body?.trim();
+
+    if (body) {
+        return body.length > 120 ? `${body.slice(0, 119)}…` : body;
+    }
+
+    const labels: Record<string, string> = {
+        image: 'Imagen',
+        audio: 'Audio',
+        video: 'Video',
+        document: 'Documento',
+        contact: 'Contacto',
+    };
+
+    return labels[message.type] ?? 'Mensaje';
+}
+
+function QuotedMessagePreview({
+    quotedMessage,
+    conversation,
+}: {
+    quotedMessage: QuotedMessage;
+    conversation: ConversationItem;
+}) {
+    const sender = quotedMessageSenderLabel(quotedMessage, conversation);
+    const body = quotedMessage.body?.trim();
+
+    return (
+        <div className="app-surface-soft mb-2 min-w-0 rounded-md border border-l-3 border-l-(--app-accent) px-2 py-1.5">
+            {sender ? (
+                <p className="truncate text-xs font-semibold text-(--app-accent)">
+                    {sender}
+                </p>
+            ) : null}
+            <p className="app-muted truncate text-xs leading-5">
+                {body || quotedMessage.label}
+            </p>
+        </div>
+    );
+}
+
+function quotedMessageSenderLabel(
+    quotedMessage: QuotedMessage,
+    conversation: ConversationItem,
+): string | null {
+    if (quotedMessage.direction === 'outbound') {
+        return 'Vos';
+    }
+
+    if (conversation.contact_name) {
+        return conversation.contact_name;
+    }
+
+    return conversation.title && conversation.title !== 'Contacto desconocido'
+        ? conversation.title
+        : null;
 }
 
 function unavailableMediaLabel(type: string): string {
@@ -2961,5 +4573,8 @@ function escapeRegExp(value: string): string {
 }
 
 function csrfToken(): string {
-    return document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '';
+    return (
+        document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')
+            ?.content ?? ''
+    );
 }

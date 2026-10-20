@@ -994,3 +994,125 @@ function bindReadyOpenWaClient(): void
 
     test()->instance(OpenWaClient::class, $client);
 }
+
+it('exposes typed reaction metadata and eligibility for rendered messages', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491112223333@c.us',
+        'title' => 'Cliente Reacciones',
+    ]);
+
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'reaction-message-1',
+        'direction' => 'inbound',
+        'body' => 'Mensaje con reacciones',
+        'type' => 'text',
+        'status' => 'received',
+        'received_at' => now(),
+        'media_metadata' => [
+            'reactions' => [
+                'first@c.us' => '👍',
+                'second@c.us' => '👍',
+                'third@c.us' => '❤️',
+            ],
+        ],
+        'accepted_reaction_emoji' => '🙏',
+        'accepted_reaction_at' => now(),
+    ]);
+
+    $this->get(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('messages.0.id', $message->id)
+            ->where('messages.0.can_react', true)
+            ->where('messages.0.media_metadata.reactions', [
+                'first@c.us' => '👍',
+                'second@c.us' => '👍',
+                'third@c.us' => '❤️',
+            ])
+            ->where('messages.0.accepted_reaction_emoji', '🙏')
+            ->where('messages.0.accepted_reaction_at', fn (?string $value): bool => $value !== null),
+        );
+});
+
+it('serializes persisted outbound quoted message data', function () {
+    $this->withoutMiddleware(Authenticate::class);
+    $this->withoutVite();
+
+    bindReadyOpenWaClient();
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491112223333@c.us',
+        'title' => 'Cliente Cotizado',
+    ]);
+    $quotedMessage = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'quoted-message-1',
+        'direction' => 'inbound',
+        'body' => 'Mensaje original',
+        'type' => 'text',
+        'status' => 'received',
+        'received_at' => now()->subMinute(),
+    ]);
+    $reply = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'reply-message-1',
+        'direction' => 'outbound',
+        'body' => 'Respuesta persistida',
+        'type' => 'text',
+        'status' => 'accepted',
+        'sent_at' => now(),
+        'reply_to_message_id' => $quotedMessage->id,
+        'quoted_message_external_id' => $quotedMessage->external_id,
+        'quoted_message_snapshot' => [
+            'direction' => 'inbound',
+            'type' => 'text',
+            'body' => 'Mensaje original',
+            'label' => 'Mensaje',
+        ],
+    ]);
+    $fallbackReply = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'external_id' => 'reply-message-2',
+        'direction' => 'outbound',
+        'body' => 'Respuesta con snapshot',
+        'type' => 'text',
+        'status' => 'accepted',
+        'sent_at' => now()->addSecond(),
+        'quoted_message_external_id' => 'removed-message-1',
+        'quoted_message_snapshot' => [
+            'direction' => 'inbound',
+            'type' => 'image',
+            'body' => null,
+            'label' => 'Imagen',
+        ],
+    ]);
+
+    $this->get(route('whatsapp.conversations', ['chat' => $conversation->external_id]))
+        ->assertOk()
+        ->assertInertia(fn (Assert $page) => $page
+            ->where('messages.1.id', $reply->id)
+            ->where('messages.1.quoted_message', [
+                'id' => $quotedMessage->id,
+                'external_id' => 'quoted-message-1',
+                'direction' => 'inbound',
+                'type' => 'text',
+                'body' => 'Mensaje original',
+                'label' => 'Mensaje original',
+            ])
+            ->where('messages.2.id', $fallbackReply->id)
+            ->where('messages.2.quoted_message', [
+                'id' => null,
+                'external_id' => 'removed-message-1',
+                'direction' => 'inbound',
+                'type' => 'image',
+                'body' => null,
+                'label' => 'Imagen',
+            ]),
+        );
+});

@@ -76,6 +76,7 @@ class StoreConversationMessageRequest extends FormRequest
         return [
             'body' => ['nullable', 'required_without:media', 'string', 'max:4000'],
             'idempotency_key' => ['required', 'string', 'max:100'],
+            'reply_to_message_id' => ['nullable', 'integer'],
             'media' => ['nullable', 'array', 'max:3'],
             'media.*' => ['file', 'max:25600'],
             'ptt' => ['nullable', 'boolean'],
@@ -115,6 +116,7 @@ class StoreConversationMessageRequest extends FormRequest
             'idempotency_key.required' => 'No se pudo preparar el envío. Actualizá la página e intentá de nuevo.',
             'idempotency_key.string' => 'La clave de envío no es válida. Actualizá la página e intentá de nuevo.',
             'idempotency_key.max' => 'La clave de envío es demasiado larga. Actualizá la página e intentá de nuevo.',
+            'reply_to_message_id.integer' => 'El mensaje seleccionado para responder no es válido.',
             'media.array' => 'Los adjuntos no son válidos.',
             'media.max' => 'Podés enviar hasta 3 archivos por vez.',
             'media.*.file' => 'El adjunto debe ser un archivo válido.',

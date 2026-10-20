@@ -4,6 +4,7 @@ use App\Jobs\RunWhatsappSyncMaintenance;
 use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 
 beforeEach(function () {
@@ -119,3 +120,42 @@ function bindOpenWaSession(?array $session): void
 
     test()->instance(OpenWaClient::class, $client);
 }
+
+it('adds message reactions to the existing operational webhook when the session is ready', function () {
+    config([
+        'openwa.base_url' => 'http://openwa.test/api',
+        'openwa.webhook_url' => 'https://app.example/api/internal/openwa/messages',
+    ]);
+
+    Http::fake(function ($request) {
+        if ($request->url() === 'http://openwa.test/api/sessions/session-1/webhooks') {
+            return Http::response([[
+                'id' => 'webhook-1',
+                'url' => 'https://app.example/api/internal/openwa/messages',
+                'events' => ['message.received', 'message.edited'],
+            ]]);
+        }
+
+        if ($request->url() === 'http://openwa.test/api/sessions/session-1/webhooks/webhook-1') {
+            return Http::response(['id' => 'webhook-1']);
+        }
+
+        return Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]);
+    });
+
+    $this->artisan('whatsapp:monitor-openwa')
+        ->expectsOutput('Sesión whatsapp-sistemas: ready.')
+        ->assertSuccessful();
+
+    Http::assertSent(fn ($request): bool => $request->method() === 'PUT'
+        && $request->url() === 'http://openwa.test/api/sessions/session-1/webhooks/webhook-1'
+        && $request->data() === [
+            'events' => ['message.received', 'message.edited', 'message.reaction'],
+        ]);
+});

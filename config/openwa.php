@@ -7,6 +7,8 @@ return [
 
     'webhook_secret' => env('OPENWA_WEBHOOK_SECRET'),
 
+    'webhook_url' => env('OPENWA_WEBHOOK_URL', rtrim((string) env('APP_URL', 'http://localhost'), '/').'/api/internal/openwa/messages'),
+
     'require_webhook_secret' => (bool) env('OPENWA_REQUIRE_WEBHOOK_SECRET', env('APP_ENV') === 'production'),
 
     'session_name' => env('OPENWA_SESSION_NAME', 'whatsapp-sistemas'),

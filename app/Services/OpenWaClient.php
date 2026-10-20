@@ -120,6 +120,19 @@ class OpenWaClient
             ->json();
     }
 
+    public function contactPhone(string $sessionId, string $contactId): ?string
+    {
+        $encodedContactId = rawurlencode($contactId);
+        $payload = $this->request()
+            ->get("sessions/{$sessionId}/contacts/{$encodedContactId}/phone")
+            ->throw()
+            ->json();
+
+        return is_array($payload) && ($payload['contactId'] ?? null) === $contactId && is_string($payload['phone'] ?? null)
+            ? $payload['phone']
+            : null;
+    }
+
     /**
      * @return array<string, mixed>|array<int, mixed>
      */
@@ -218,13 +231,19 @@ class OpenWaClient
     /**
      * @return array<string, mixed>
      */
-    public function sendTextMessage(string $sessionId, string $chatId, string $text): array
+    public function sendTextMessage(string $sessionId, string $chatId, string $text, ?string $quotedMessageId = null): array
     {
+        $payload = [
+            'chatId' => $chatId,
+            'text' => $text,
+        ];
+
+        if ($quotedMessageId !== null && $quotedMessageId !== '') {
+            $payload['quotedMessageId'] = $quotedMessageId;
+        }
+
         return $this->request()
-            ->post("sessions/{$sessionId}/messages/send-text", [
-                'chatId' => $chatId,
-                'text' => $text,
-            ])
+            ->post("sessions/{$sessionId}/messages/send-text", $payload)
             ->throw()
             ->json();
     }
@@ -280,6 +299,56 @@ class OpenWaClient
             ->json();
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function reactToMessage(string $sessionId, string $chatId, string $messageId, string $emoji): array
+    {
+        return $this->request()
+            ->post("sessions/{$sessionId}/messages/react", [
+                'chatId' => $chatId,
+                'messageId' => $messageId,
+                'emoji' => $emoji,
+            ])
+            ->throw()
+            ->json();
+    }
+
+    public function ensureMessageReactionWebhook(string $sessionId, string $webhookUrl): bool
+    {
+        $webhooks = $this->request()
+            ->get("sessions/{$sessionId}/webhooks")
+            ->throw()
+            ->json();
+
+        $webhooks = is_array($webhooks) && array_is_list($webhooks)
+            ? $webhooks
+            : (is_array($webhooks['data'] ?? null) ? $webhooks['data'] : []);
+
+        foreach ($webhooks as $webhook) {
+            if (! is_array($webhook) || ($webhook['url'] ?? null) !== $webhookUrl) {
+                continue;
+            }
+
+            $webhookId = $webhook['id'] ?? null;
+            $events = $webhook['events'] ?? [];
+
+            if (! is_string($webhookId) || ! is_array($events) || in_array('*', $events, true) || in_array('message.reaction', $events, true)) {
+                return false;
+            }
+
+            $events[] = 'message.reaction';
+
+            $this->request()
+                ->put("sessions/{$sessionId}/webhooks/{$webhookId}", ['events' => array_values($events)])
+                ->throw();
+
+            return true;
+        }
+
+        return false;
+    }
+
     public function contactProfilePicture(string $sessionId, string $contactId): ?string
     {
         $encodedContactId = rawurlencode($contactId);
@@ -307,7 +376,7 @@ class OpenWaClient
     /**
      * @return array<string, mixed>
      */
-    public function sendImageMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null): array
+    public function sendImageMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null, ?string $quotedMessageId = null): array
     {
         return $this->sendMediaMessage($sessionId, 'send-image', [
             'chatId' => $chatId,
@@ -315,13 +384,14 @@ class OpenWaClient
             'mimetype' => $mimeType,
             'filename' => $filename,
             'caption' => $caption,
+            'quotedMessageId' => $quotedMessageId,
         ]);
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function sendVideoMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null): array
+    public function sendVideoMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null, ?string $quotedMessageId = null): array
     {
         return $this->sendMediaMessage($sessionId, 'send-video', [
             'chatId' => $chatId,
@@ -329,13 +399,14 @@ class OpenWaClient
             'mimetype' => $mimeType,
             'filename' => $filename,
             'caption' => $caption,
+            'quotedMessageId' => $quotedMessageId,
         ]);
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function sendAudioMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, bool $ptt = false): array
+    public function sendAudioMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, bool $ptt = false, ?string $quotedMessageId = null): array
     {
         return $this->sendMediaMessage($sessionId, 'send-audio', [
             'chatId' => $chatId,
@@ -343,13 +414,14 @@ class OpenWaClient
             'mimetype' => $mimeType,
             'filename' => $filename,
             'ptt' => $ptt,
+            'quotedMessageId' => $quotedMessageId,
         ]);
     }
 
     /**
      * @return array<string, mixed>
      */
-    public function sendDocumentMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null): array
+    public function sendDocumentMessage(string $sessionId, string $chatId, string $base64, string $mimeType, string $filename, ?string $caption = null, ?string $quotedMessageId = null): array
     {
         return $this->sendMediaMessage($sessionId, 'send-document', [
             'chatId' => $chatId,
@@ -357,6 +429,7 @@ class OpenWaClient
             'mimetype' => $mimeType,
             'filename' => $filename,
             'caption' => $caption,
+            'quotedMessageId' => $quotedMessageId,
         ]);
     }
 
@@ -366,6 +439,10 @@ class OpenWaClient
      */
     private function sendMediaMessage(string $sessionId, string $endpoint, array $payload): array
     {
+        if (($payload['quotedMessageId'] ?? null) === null || $payload['quotedMessageId'] === '') {
+            unset($payload['quotedMessageId']);
+        }
+
         return $this->request()
             ->post("sessions/{$sessionId}/messages/{$endpoint}", $payload)
             ->throw()

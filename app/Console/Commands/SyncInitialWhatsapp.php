@@ -3,11 +3,12 @@
 namespace App\Console\Commands;
 
 use App\Models\Contact;
-use App\Models\Conversation;
 use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
+use App\Services\WhatsappConversationResolver;
 use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
+use App\Services\WhatsappMessageImportSource;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
@@ -149,17 +150,13 @@ class SyncInitialWhatsapp extends Command
             return;
         }
 
-        $conversation = Conversation::query()->updateOrCreate(
-            ['external_id' => $chatExternalId],
-            [
-                'contact_id' => $this->upsertContact($chat, $chatExternalId)?->id,
-                'title' => $this->conversationTitle($chat, $chatExternalId),
-            ],
+        app(WhatsappConversationResolver::class)->verifyLid($chatExternalId, $sessionId);
+        $conversation = app(WhatsappConversationResolver::class)->resolve(
+            $chatExternalId,
+            $this->upsertContact($chat, $chatExternalId),
+            $this->conversationTitle($chat, $chatExternalId),
         );
         $this->conversationsUpserted++;
-
-        $newestMessage = null;
-        $newestTimestamp = null;
 
         foreach ($recentMessages as $messagePayload) {
             if (! is_array($messagePayload)) {
@@ -168,15 +165,8 @@ class SyncInitialWhatsapp extends Command
                 continue;
             }
 
-            $result = $importer->importMessage($messagePayload, $chat, unhideConversation: false);
-            $message = $result['message'];
+            $result = $importer->importMessage($messagePayload, $chat, WhatsappMessageImportSource::HistoricalSync);
             $created = $result['created'];
-            $messageTimestamp = $message?->sent_at ?? $message?->received_at ?? $message?->created_at;
-
-            if ($message !== null && ($newestTimestamp === null || ($messageTimestamp !== null && $messageTimestamp->greaterThan($newestTimestamp)))) {
-                $newestMessage = $message;
-                $newestTimestamp = $messageTimestamp;
-            }
 
             if ($created) {
                 $this->messagesCreated++;
@@ -185,12 +175,7 @@ class SyncInitialWhatsapp extends Command
             }
         }
 
-        if ($newestMessage !== null) {
-            $conversation->forceFill([
-                'last_message_id' => $newestMessage->id,
-                'last_message_at' => $newestTimestamp,
-            ])->save();
-        }
+        $importer->refreshConversationLastMessage($conversation);
     }
 
     /**
@@ -207,11 +192,11 @@ class SyncInitialWhatsapp extends Command
 
         return Contact::query()->updateOrCreate(
             ['external_id' => $contactExternalId],
-            [
+            array_filter([
                 'name' => $this->firstString($contact, ['name', 'shortName', 'formattedName']) ?? $this->firstString($chat, ['name', 'title']),
                 'push_name' => $this->firstString($contact, ['pushName', 'notifyName']) ?? $this->firstString($chat, ['pushName']),
-                'phone' => $this->firstString($contact, ['phone', 'number', 'user']),
-            ],
+                'phone' => $this->firstString($contact, ['phone', 'number']),
+            ], fn (?string $value): bool => $value !== null),
         );
     }
 

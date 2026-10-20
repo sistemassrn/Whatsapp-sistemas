@@ -12,6 +12,7 @@ use Illuminate\Support\Carbon;
  * @property string|null $name
  * @property string|null $push_name
  * @property string|null $phone
+ * @property string|null $verified_phone
  * @property string|null $profile_photo_url
  * @property Carbon|null $profile_photo_fetched_at
  * @property string|null $profile_photo_error

@@ -50,6 +50,8 @@ class WhatsappContactSynchronizer
 
                 $processed++;
 
+                app(WhatsappConversationResolver::class)->verifyLid($contact->external_id, $sessionId);
+
                 if ($contact->wasRecentlyCreated) {
                     $created++;
                 } elseif ($contact->wasChanged()) {

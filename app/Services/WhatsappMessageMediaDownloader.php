@@ -33,7 +33,7 @@ class WhatsappMessageMediaDownloader
             return false;
         }
 
-        $chatId ??= $message->conversation->external_id;
+        $chatId ??= $message->remoteChatId();
         $messageId = $message->external_id;
 
         if (! is_string($chatId) || trim($chatId) === '' || ! is_string($messageId) || trim($messageId) === '') {

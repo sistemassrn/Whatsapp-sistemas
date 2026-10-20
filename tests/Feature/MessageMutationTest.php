@@ -284,3 +284,236 @@ function createMessage(Conversation $conversation, array $attributes = []): Mess
         'sent_at' => now(),
     ], $attributes));
 }
+
+it('requests a valid reaction through OpenWA using the remote chat id', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    fakeReadyOpenWa([
+        'openwa.test/api/sessions/session-1/messages/react' => Http::response(['success' => true]),
+    ]);
+
+    $conversation = createConversation();
+    $message = createMessage($conversation, [
+        'media_metadata' => ['source_chat_id' => '5491100000000@lid'],
+    ]);
+
+    $this->postJson(route('whatsapp.messages.reactions.store', $message), ['emoji' => '👍'])
+        ->assertOk()
+        ->assertJson([
+            'status' => 'accepted',
+            'accepted_reaction_emoji' => '👍',
+        ]);
+
+    $message->refresh();
+
+    expect($message->accepted_reaction_emoji)->toBe('👍')
+        ->and($message->accepted_reaction_at)->not->toBeNull();
+
+    Http::assertSent(fn ($request): bool => $request->url() === 'http://openwa.test/api/sessions/session-1/messages/react'
+        && $request->data() === [
+            'chatId' => '5491100000000@lid',
+            'messageId' => 'openwa-message-1',
+            'emoji' => '👍',
+        ]);
+});
+
+it('requires authentication before a reaction mutation is disclosed', function () {
+    $conversation = createConversation();
+    $message = createMessage($conversation);
+
+    $this->postJson(route('whatsapp.messages.reactions.store', $message), ['emoji' => '👍'])
+        ->assertUnauthorized();
+});
+
+it('accepts a single Unicode flag emoji reaction', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    fakeReadyOpenWa([
+        'openwa.test/api/sessions/session-1/messages/react' => Http::response(['success' => true]),
+    ]);
+
+    $message = createMessage(createConversation());
+
+    $this->postJson(route('whatsapp.messages.reactions.store', $message), ['emoji' => '🇦🇷'])
+        ->assertOk();
+});
+
+it('persists an accepted empty reaction after OpenWA removes it', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    fakeReadyOpenWa([
+        'openwa.test/api/sessions/session-1/messages/react' => Http::response(['success' => true]),
+    ]);
+
+    $message = createMessage(createConversation(), [
+        'accepted_reaction_emoji' => '👍',
+        'accepted_reaction_at' => now()->subMinute(),
+    ]);
+
+    $this->postJson(route('whatsapp.messages.reactions.store', $message), ['emoji' => ''])
+        ->assertOk()
+        ->assertJson([
+            'status' => 'accepted',
+            'accepted_reaction_emoji' => '',
+        ]);
+
+    $message->refresh();
+
+    expect($message->accepted_reaction_emoji)->toBe('')
+        ->and($message->accepted_reaction_at)->not->toBeNull();
+});
+
+it('rejects invalid reactions before calling OpenWA', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    Http::fake();
+
+    $conversation = createConversation();
+    $pending = createMessage($conversation, [
+        'external_id' => null,
+        'status' => 'pending',
+    ]);
+    $deleted = createMessage($conversation, [
+        'external_id' => 'deleted-message',
+        'deleted_at' => now(),
+    ]);
+    $eligible = createMessage($conversation, [
+        'external_id' => 'eligible-message',
+    ]);
+
+    $this->postJson(route('whatsapp.messages.reactions.store', $pending), ['emoji' => '👍'])
+        ->assertUnprocessable();
+    $this->postJson(route('whatsapp.messages.reactions.store', $deleted), ['emoji' => '👍'])
+        ->assertUnprocessable();
+    $this->postJson(route('whatsapp.messages.reactions.store', $eligible), ['emoji' => 'texto'])
+        ->assertUnprocessable();
+    $this->postJson(route('whatsapp.messages.reactions.store', $eligible), [])
+        ->assertUnprocessable();
+
+    Http::assertNothingSent();
+});
+
+it('returns a gateway failure without changing retained reaction snapshots', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    config()->set('openwa.base_url', 'http://openwa.test/api');
+    config()->set('openwa.session_name', 'whatsapp-sistemas');
+    Http::fake(function ($request) {
+        if ($request->url() === 'http://openwa.test/api/sessions/session-1/messages/react') {
+            return Http::response(['message' => 'upstream failed'], 500);
+        }
+
+        return Http::response([
+            'data' => [
+                'id' => 'session-1',
+                'name' => 'whatsapp-sistemas',
+                'status' => 'ready',
+            ],
+        ]);
+    });
+
+    $conversation = createConversation();
+    $message = createMessage($conversation, [
+        'media_metadata' => ['reactions' => ['5491100000000@c.us' => '❤️']],
+    ]);
+
+    $this->postJson(route('whatsapp.messages.reactions.store', $message), ['emoji' => '👍'])
+        ->assertStatus(502);
+
+    expect($message->refresh()->media_metadata)->toBe(['reactions' => ['5491100000000@c.us' => '❤️']]);
+});
+
+it('replaces, clears, and preserves reaction snapshots from reaction webhooks', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $conversation = createConversation();
+    $message = createMessage($conversation, [
+        'media_metadata' => [
+            'duration' => 12,
+            'reactions' => ['old@c.us' => '😂'],
+        ],
+        'accepted_reaction_emoji' => '❤️',
+        'accepted_reaction_at' => now()->subMinute(),
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message.reaction',
+        'data' => [
+            'messageId' => $message->external_id,
+            'chatId' => $conversation->external_id,
+            'reactions' => [
+                ['senderId' => 'first@c.us', 'emoji' => '👍'],
+                ['senderId' => 'second@c.us', 'emoji' => '👍'],
+            ],
+        ],
+    ])->assertOk();
+
+    expect($message->refresh()->media_metadata)->toBe([
+        'duration' => 12,
+        'reactions' => [
+            'first@c.us' => '👍',
+            'second@c.us' => '👍',
+        ],
+    ])
+        ->and($message->accepted_reaction_emoji)->toBeNull()
+        ->and($message->accepted_reaction_at)->toBeNull();
+
+    $message->update([
+        'accepted_reaction_emoji' => '👍',
+        'accepted_reaction_at' => now(),
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message.reaction',
+        'data' => [
+            'messageId' => $message->external_id,
+            'chatId' => $conversation->external_id,
+            'reactions' => [],
+        ],
+    ])->assertOk();
+
+    expect($message->refresh()->media_metadata)->toBe([
+        'duration' => 12,
+        'reactions' => [],
+    ])
+        ->and($message->accepted_reaction_emoji)->toBeNull()
+        ->and($message->accepted_reaction_at)->toBeNull();
+
+    $message->update([
+        'media_metadata' => ['duration' => 12, 'reactions' => ['kept@c.us' => '🔥']],
+        'accepted_reaction_emoji' => '🔥',
+        'accepted_reaction_at' => now(),
+    ]);
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message.reaction',
+        'data' => [
+            'messageId' => $message->external_id,
+            'chatId' => $conversation->external_id,
+            'reaction' => '🔥',
+        ],
+    ])->assertOk();
+
+    expect($message->refresh()->media_metadata)->toBe([
+        'duration' => 12,
+        'reactions' => ['kept@c.us' => '🔥'],
+    ])
+        ->and($message->accepted_reaction_emoji)->toBe('🔥')
+        ->and($message->accepted_reaction_at)->not->toBeNull();
+});
+
+it('ignores reaction webhooks for unknown messages without creating a message', function () {
+    config(['openwa.webhook_secret' => null]);
+
+    $this->postJson(route('internal.openwa.messages.store'), [
+        'event' => 'message.reaction',
+        'data' => [
+            'messageId' => 'missing-message',
+            'chatId' => '5491100000000@c.us',
+            'reactions' => [],
+        ],
+    ])->assertOk()
+        ->assertJson(['status' => 'ignored', 'reason' => 'orphan_mutation']);
+
+    expect(Message::query()->count())->toBe(0);
+});

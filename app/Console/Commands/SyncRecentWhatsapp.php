@@ -3,12 +3,13 @@
 namespace App\Console\Commands;
 
 use App\Models\Contact;
-use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\WhatsappAccount;
 use App\Services\OpenWaClient;
+use App\Services\WhatsappConversationResolver;
 use App\Services\WhatsappHistoricalImportFilter;
 use App\Services\WhatsappMessageImporter;
+use App\Services\WhatsappMessageImportSource;
 use Carbon\CarbonInterface;
 use Illuminate\Console\Attributes\Description;
 use Illuminate\Console\Attributes\Signature;
@@ -151,6 +152,8 @@ class SyncRecentWhatsapp extends Command
             return;
         }
 
+        app(WhatsappConversationResolver::class)->verifyLid($chatExternalId, $sessionId);
+
         if ($recentMessages === [] && $filter->isSavedOrScheduledChat($chat)) {
             $this->upsertConversationFromChat($chat, $chatExternalId);
 
@@ -166,7 +169,7 @@ class SyncRecentWhatsapp extends Command
                 continue;
             }
 
-            $result = $importer->importMessage($messagePayload, $chat, unhideConversation: false);
+            $result = $importer->importMessage($messagePayload, $chat, WhatsappMessageImportSource::HistoricalSync);
 
             if ($result['created']) {
                 $this->messagesCreated++;
@@ -289,12 +292,10 @@ class SyncRecentWhatsapp extends Command
      */
     private function upsertConversationFromChat(array $chat, string $chatExternalId): void
     {
-        Conversation::query()->updateOrCreate(
-            ['external_id' => $chatExternalId],
-            [
-                'contact_id' => $this->upsertContact($chat, $chatExternalId)?->id,
-                'title' => $this->conversationTitle($chat, $chatExternalId),
-            ],
+        app(WhatsappConversationResolver::class)->resolve(
+            $chatExternalId,
+            $this->upsertContact($chat, $chatExternalId),
+            $this->conversationTitle($chat, $chatExternalId),
         );
     }
 
@@ -312,11 +313,11 @@ class SyncRecentWhatsapp extends Command
 
         return Contact::query()->updateOrCreate(
             ['external_id' => $contactExternalId],
-            [
+            array_filter([
                 'name' => $this->firstString($contact, ['name', 'shortName', 'formattedName']) ?? $this->firstString($chat, ['name', 'title']),
                 'push_name' => $this->firstString($contact, ['pushName', 'notifyName']) ?? $this->firstString($chat, ['pushName']),
-                'phone' => $this->firstString($contact, ['phone', 'number', 'user']),
-            ],
+                'phone' => $this->firstString($contact, ['phone', 'number']),
+            ], fn (?string $value): bool => $value !== null),
         );
     }
 

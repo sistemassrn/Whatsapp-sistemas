@@ -102,7 +102,7 @@ class RetryWhatsappMedia extends Command
                 continue;
             }
 
-            $chatId = $message->conversation->external_id ?? null;
+            $chatId = $message->remoteChatId();
 
             if (! is_string($chatId) || trim($chatId) === '') {
                 $this->skipped++;

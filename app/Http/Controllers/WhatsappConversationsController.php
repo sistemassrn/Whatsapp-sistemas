@@ -7,6 +7,7 @@ use App\Models\Conversation;
 use App\Models\Message;
 use App\Models\WhatsappAccount;
 use App\Services\WhatsappConnectionStatus;
+use App\Services\WhatsappConversationResolver;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -83,6 +84,7 @@ class WhatsappConversationsController extends Controller
                 $selectedConversationMessageCount = (clone $messagesQuery)->count();
 
                 $messages = $messagesQuery
+                    ->with('quotedMessage')
                     ->orderByRaw('COALESCE(sent_at, received_at, created_at) desc')
                     ->limit($messageLimit)
                     ->get()
@@ -167,6 +169,10 @@ class WhatsappConversationsController extends Controller
                 'delete_error' => $message->delete_error,
                 'can_edit' => self::canMutateMessage($message),
                 'can_delete' => self::canMutateMessage($message),
+                'can_react' => self::canReactToMessage($message),
+                'quoted_message' => self::quotedMessagePayload($message),
+                'accepted_reaction_emoji' => $message->accepted_reaction_emoji,
+                'accepted_reaction_at' => $message->accepted_reaction_at?->toISOString(),
                 'media_url' => $message->media_disk === 'whatsapp_media' && $message->media_path !== null
                     ? route('whatsapp.messages.media.show', $message)
                     : null,
@@ -239,7 +245,7 @@ class WhatsappConversationsController extends Controller
         ]);
     }
 
-    public function openContact(Request $request, Contact $contact): RedirectResponse
+    public function openContact(Request $request, Contact $contact, WhatsappConversationResolver $resolver): RedirectResponse
     {
         $externalId = trim($contact->external_id);
 
@@ -248,26 +254,8 @@ class WhatsappConversationsController extends Controller
                 ->with('error', 'No se puede abrir un contacto sin identificador de WhatsApp.');
         }
 
-        $conversation = Conversation::query()
-            ->where('external_id', $externalId)
-            ->first();
-
-        if ($conversation === null) {
-            $conversation = Conversation::query()->create([
-                'external_id' => $externalId,
-                'contact_id' => $contact->id,
-                'title' => self::contactTitleFallback($contact),
-                'last_message_at' => null,
-                'hidden_at' => null,
-                'hidden_reason' => null,
-            ]);
-        } else {
-            $conversation->forceFill([
-                'contact_id' => $conversation->contact_id ?? $contact->id,
-                'hidden_at' => null,
-                'hidden_reason' => null,
-            ])->save();
-        }
+        $resolver->verifyLid($externalId);
+        $conversation = $resolver->resolve($externalId, $contact, self::contactTitleFallback($contact), unhide: true);
 
         return redirect()->route('whatsapp.conversations', ['chat' => $conversation->external_id]);
     }
@@ -326,7 +314,7 @@ class WhatsappConversationsController extends Controller
             'retry_media_cooldown_hours' => (int) config('openwa.retry_media_cooldown_hours'),
             'retry_media_every_minutes' => 5,
             'sync_maintenance_stale_minutes' => WhatsappAccount::maintenanceStaleMinutes(),
-            'scheduler' => 'Programado todos los días a las 7:00 a. m. (Argentina)',
+            'scheduler' => 'Programado todos los días a las 7:00 a. m.',
         ];
     }
 
@@ -384,6 +372,14 @@ class WhatsappConversationsController extends Controller
             && $message->deleted_at === null;
     }
 
+    private static function canReactToMessage(Message $message): bool
+    {
+        return $message->external_id !== null
+            && $message->external_id !== ''
+            && $message->deleted_at === null
+            && ! in_array($message->status, ['pending', 'verifying'], true);
+    }
+
     private static function messagePreview(?Message $message): ?string
     {
         if ($message === null) {
@@ -407,6 +403,40 @@ class WhatsappConversationsController extends Controller
             'text' => 'Mensaje sin contenido',
             default => 'Archivo',
         };
+    }
+
+    /**
+     * @return array{id: int|null, external_id: string|null, direction: string, type: string, body: string|null, label: string}|null
+     */
+    private static function quotedMessagePayload(Message $message): ?array
+    {
+        $quotedMessage = $message->quotedMessage;
+
+        if ($quotedMessage !== null) {
+            return [
+                'id' => $quotedMessage->id,
+                'external_id' => $quotedMessage->external_id,
+                'direction' => $quotedMessage->direction,
+                'type' => $quotedMessage->type,
+                'body' => $quotedMessage->body,
+                'label' => self::messagePreview($quotedMessage) ?? 'Mensaje',
+            ];
+        }
+
+        $snapshot = $message->quoted_message_snapshot;
+
+        if ($snapshot === null && $message->quoted_message_external_id === null) {
+            return null;
+        }
+
+        return [
+            'id' => null,
+            'external_id' => $message->quoted_message_external_id,
+            'direction' => $snapshot['direction'] ?? 'inbound',
+            'type' => $snapshot['type'] ?? 'text',
+            'body' => $snapshot['body'] ?? null,
+            'label' => $snapshot['label'] ?? 'Mensaje',
+        ];
     }
 
     private static function conversationDisplayName(Conversation $conversation): string

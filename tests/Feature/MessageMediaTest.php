@@ -40,7 +40,7 @@ it('streams stored message media through an authenticated route', function () {
         ->assertOk()
         ->assertHeader('Content-Type', 'image/jpeg')
         ->assertHeader('X-Content-Type-Options', 'nosniff')
-        ->assertSee('image-bytes', false);
+        ->assertStreamedContent('image-bytes');
 });
 
 it('returns not found safely when stored message media is missing', function () {
@@ -68,6 +68,32 @@ it('returns not found safely when stored message media is missing', function () 
 
     $this->get(route('whatsapp.messages.media.show', $message))
         ->assertNotFound();
+});
+
+it('does not disclose private media bytes or range metadata to an unauthenticated request', function () {
+    Storage::fake('whatsapp_media');
+    Storage::disk('whatsapp_media')->put('inbound/test/private.mp3', 'private-audio');
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491199999998@c.us',
+        'title' => 'Cliente Privado',
+    ]);
+    $message = Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'direction' => 'inbound',
+        'type' => 'audio',
+        'status' => 'received',
+        'media_disk' => 'whatsapp_media',
+        'media_path' => 'inbound/test/private.mp3',
+        'media_mime_type' => 'audio/mpeg',
+        'media_download_status' => 'stored',
+    ]);
+
+    $this->withHeader('Range', 'bytes=0-4')
+        ->getJson(route('whatsapp.messages.media.show', $message))
+        ->assertUnauthorized()
+        ->assertHeaderMissing('Content-Range')
+        ->assertDontSee('priva');
 });
 
 it('stores inline webhook image media on the private disk', function () {
@@ -1178,7 +1204,7 @@ it('downloads omitted webhook voice notes with ogg codec mime so they can be pla
     $this->get(route('whatsapp.messages.media.show', $message))
         ->assertOk()
         ->assertHeader('Content-Type', 'audio/ogg; codecs=opus')
-        ->assertSee('ogg-bytes', false);
+        ->assertStreamedContent('ogg-bytes');
 });
 
 it('stores webhook media as failed when base64 payload is invalid', function () {
@@ -1217,4 +1243,84 @@ function invokeRetryMediaStaticMethod(string $method, array $arguments): mixed
     $reflectionMethod = new ReflectionMethod(RetryWhatsappMedia::class, $method);
 
     return $reflectionMethod->invoke(null, ...$arguments);
+}
+
+it('streams exact and open ended single byte ranges for authorized media', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    [$message] = createRangeMediaMessage('abcdefghijklmnopqrstuvwxyz');
+
+    $this->withHeader('Range', 'bytes=10-19')
+        ->get(route('whatsapp.messages.media.show', $message))
+        ->assertStatus(206)
+        ->assertHeader('Accept-Ranges', 'bytes')
+        ->assertHeader('Content-Range', 'bytes 10-19/26')
+        ->assertHeader('Content-Length', '10')
+        ->assertStreamedContent('klmnopqrst');
+
+    $this->withHeader('Range', 'bytes=20-')
+        ->get(route('whatsapp.messages.media.show', $message))
+        ->assertStatus(206)
+        ->assertHeader('Content-Range', 'bytes 20-25/26')
+        ->assertHeader('Content-Length', '6')
+        ->assertStreamedContent('uvwxyz');
+});
+
+it('streams suffix ranges and clamps range ends to the stored media length', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    [$message] = createRangeMediaMessage('abcdefghijklmnopqrstuvwxyz');
+
+    $this->withHeader('Range', 'bytes=-4')
+        ->get(route('whatsapp.messages.media.show', $message))
+        ->assertStatus(206)
+        ->assertHeader('Content-Range', 'bytes 22-25/26')
+        ->assertHeader('Content-Length', '4')
+        ->assertStreamedContent('wxyz');
+
+    $this->withHeader('Range', 'bytes=24-100')
+        ->get(route('whatsapp.messages.media.show', $message))
+        ->assertStatus(206)
+        ->assertHeader('Content-Range', 'bytes 24-25/26')
+        ->assertHeader('Content-Length', '2')
+        ->assertStreamedContent('yz');
+});
+
+it('rejects malformed multi-range and unsatisfiable media range requests', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    [$message] = createRangeMediaMessage('abcdefghijklmnopqrstuvwxyz');
+
+    foreach (['bytes=0-1,3-4', 'items=0-1', 'bytes=26-30'] as $range) {
+        $this->withHeader('Range', $range)
+            ->get(route('whatsapp.messages.media.show', $message))
+            ->assertStatus(416)
+            ->assertHeader('Content-Range', 'bytes */26');
+    }
+});
+
+/**
+ * @return array{Message, Conversation}
+ */
+function createRangeMediaMessage(string $contents): array
+{
+    Storage::fake('whatsapp_media');
+    Storage::disk('whatsapp_media')->put('inbound/test/range.mp3', $contents);
+
+    $conversation = Conversation::query()->create([
+        'external_id' => '5491199999999@c.us',
+        'title' => 'Cliente Range',
+    ]);
+
+    return [Message::query()->create([
+        'conversation_id' => $conversation->id,
+        'direction' => 'inbound',
+        'type' => 'audio',
+        'status' => 'received',
+        'media_disk' => 'whatsapp_media',
+        'media_path' => 'inbound/test/range.mp3',
+        'media_mime_type' => 'audio/mpeg',
+        'media_filename' => 'range.mp3',
+        'media_download_status' => 'stored',
+    ]), $conversation];
 }

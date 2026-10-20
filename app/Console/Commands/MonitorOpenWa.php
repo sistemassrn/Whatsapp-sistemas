@@ -64,6 +64,14 @@ class MonitorOpenWa extends Command
             $updates['last_seen_at'] = $now;
             $updates['last_error'] = null;
             $updates['openwa_last_ready_at'] = $now;
+
+            try {
+                if ($client->ensureMessageReactionWebhook($this->sessionId($session), (string) config('openwa.webhook_url'))) {
+                    $this->info('Webhook de reacciones suscripto.');
+                }
+            } catch (Throwable $exception) {
+                $updates['openwa_recovery_sync_error'] = mb_substr($exception->getMessage(), 0, 65000);
+            }
         } elseif ($error !== null) {
             $updates['last_error'] = mb_substr($error, 0, 65000);
         }
@@ -120,6 +128,29 @@ class MonitorOpenWa extends Command
         }
 
         return 'unknown';
+    }
+
+    /**
+     * @param  array<string, mixed>  $session
+     */
+    private function sessionId(array $session): string
+    {
+        $id = $this->firstString($session, ['id', '_id', 'sessionId']);
+
+        if ($id !== null) {
+            return $id;
+        }
+
+        foreach (['data', 'session'] as $key) {
+            if (isset($session[$key]) && is_array($session[$key])) {
+                /** @var array<string, mixed> $nestedSession */
+                $nestedSession = $session[$key];
+
+                return $this->sessionId($nestedSession);
+            }
+        }
+
+        throw new \RuntimeException('OpenWA no devolvió un identificador de sesión.');
     }
 
     /**

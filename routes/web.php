@@ -74,3 +74,7 @@ Route::patch('/whatsapp/messages/{message}', [MessageMutationController::class, 
 Route::delete('/whatsapp/messages/{message}', [MessageMutationController::class, 'destroy'])
     ->middleware('auth')
     ->name('whatsapp.messages.destroy');
+
+Route::post('/whatsapp/messages/{message}/reactions', [MessageMutationController::class, 'react'])
+    ->middleware('auth')
+    ->name('whatsapp.messages.reactions.store');
