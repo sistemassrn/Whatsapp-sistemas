@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { ThemeToggle } from '../theme';
 
-export default function Home() {
+export default function Login() {
     const { data, setData, post, processing, errors } = useForm({
         usuario: '',
         password: '',

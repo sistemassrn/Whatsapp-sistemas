@@ -17,7 +17,7 @@ class NexoAuthController extends Controller
             return redirect()->route('whatsapp.conversations');
         }
 
-        return Inertia::render('home');
+        return Inertia::render('login');
     }
 
     public function store(Request $request): RedirectResponse
