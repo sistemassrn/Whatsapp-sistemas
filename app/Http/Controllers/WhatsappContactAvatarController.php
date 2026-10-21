@@ -14,6 +14,10 @@ class WhatsappContactAvatarController extends Controller
 {
     public function __invoke(Request $request, Contact $contact, WhatsappConnectionStatus $connectionStatus, OpenWaClient $client): JsonResponse
     {
+        $request->validate([
+            'force' => ['sometimes', 'boolean'],
+        ]);
+
         $force = $request->boolean('force');
 
         if (! $force && $this->hasFreshAvatarLookup($contact)) {

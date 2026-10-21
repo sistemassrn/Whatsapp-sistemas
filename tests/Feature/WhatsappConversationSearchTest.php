@@ -405,11 +405,14 @@ it('does not filter loaded messages by message search anymore', function () {
 it('returns a fresh cached contact avatar without calling OpenWA', function () {
     $this->withoutMiddleware(Authenticate::class);
 
+    $fetchedAt = now();
     $contact = Contact::query()->create([
         'external_id' => '5491111111111@c.us',
         'profile_photo_url' => 'https://cdn.example/avatar.jpg',
-        'profile_photo_fetched_at' => now(),
+        'profile_photo_fetched_at' => $fetchedAt,
+        'profile_photo_error' => 'Previous lookup error',
     ]);
+    $cachedFetchedAt = $contact->profile_photo_fetched_at;
 
     $client = Mockery::mock(OpenWaClient::class);
     $client->shouldNotReceive('health');
@@ -423,6 +426,59 @@ it('returns a fresh cached contact avatar without calling OpenWA', function () {
         ->assertJson([
             'avatar_url' => 'https://cdn.example/avatar.jpg',
         ]);
+
+    $contact->refresh();
+
+    expect($contact->profile_photo_url)->toBe('https://cdn.example/avatar.jpg')
+        ->and($contact->profile_photo_fetched_at?->equalTo($cachedFetchedAt))->toBeTrue()
+        ->and($contact->profile_photo_error)->toBe('Previous lookup error');
+});
+
+it('force refreshes and caches a fresh contact avatar', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+        'profile_photo_url' => 'https://pps.whatsapp.net/expired-avatar.jpg',
+        'profile_photo_fetched_at' => now(),
+    ]);
+
+    $client = Mockery::mock(OpenWaClient::class);
+    $client->shouldReceive('health')->once()->andReturn(['status' => 'ok']);
+    $client->shouldReceive('findSessionByName')->once()->andReturn([
+        'id' => 'session-1',
+        'status' => 'ready',
+    ]);
+    $client->shouldReceive('contactProfilePicture')
+        ->once()
+        ->with('session-1', $contact->external_id)
+        ->andReturn('https://pps.whatsapp.net/fresh-avatar.jpg');
+
+    $this->instance(OpenWaClient::class, $client);
+
+    $this->postJson(route('whatsapp.contacts.avatar', $contact), ['force' => true])
+        ->assertOk()
+        ->assertJson([
+            'avatar_url' => 'https://pps.whatsapp.net/fresh-avatar.jpg',
+        ]);
+
+    $contact->refresh();
+
+    expect($contact->profile_photo_url)->toBe('https://pps.whatsapp.net/fresh-avatar.jpg')
+        ->and($contact->profile_photo_fetched_at)->not->toBeNull()
+        ->and($contact->profile_photo_error)->toBeNull();
+});
+
+it('validates the contact avatar force flag', function () {
+    $this->withoutMiddleware(Authenticate::class);
+
+    $contact = Contact::query()->create([
+        'external_id' => '5491111111111@c.us',
+    ]);
+
+    $this->postJson(route('whatsapp.contacts.avatar', $contact), ['force' => 'always'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('force');
 });
 
 it('fetches and caches a stale contact avatar on demand', function () {

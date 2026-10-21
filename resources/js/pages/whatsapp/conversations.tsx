@@ -255,6 +255,108 @@ const INBOX_RELOAD_PROPS = [
 ];
 const CONTACTS_LOAD_ERROR = 'No se pudo cargar la agenda.';
 const requestedAvatarContactIds = new Set<number>();
+const requestedAvatarRefreshes = new Set<string>();
+
+function useAvatarSource(sourceUrl: string | null, contactId: number | null) {
+    const safeSourceUrl = isAvatarUrl(sourceUrl) ? sourceUrl : null;
+    const [avatarUrl, setAvatarUrl] = useState(safeSourceUrl);
+    const retryState = useRef({
+        sourceUrl: safeSourceUrl,
+        contactId,
+        hasRetried: false,
+        requestVersion: 0,
+    });
+
+    useEffect(() => {
+        retryState.current = {
+            sourceUrl: safeSourceUrl,
+            contactId,
+            hasRetried: false,
+            requestVersion: retryState.current.requestVersion + 1,
+        };
+        setAvatarUrl(safeSourceUrl);
+    }, [contactId, sourceUrl]);
+
+    useEffect(
+        () => () => {
+            retryState.current.requestVersion += 1;
+        },
+        [],
+    );
+
+    const handleAvatarError = () => {
+        const failedUrl = avatarUrl;
+
+        setAvatarUrl(null);
+
+        if (failedUrl === null || contactId === null) {
+            return;
+        }
+
+        const retryKey = `${contactId}:${failedUrl}`;
+
+        if (
+            retryState.current.hasRetried ||
+            requestedAvatarRefreshes.has(retryKey)
+        ) {
+            return;
+        }
+
+        retryState.current.hasRetried = true;
+        requestedAvatarRefreshes.add(retryKey);
+
+        const requestVersion = retryState.current.requestVersion;
+
+        void fetch(`/whatsapp/contacts/${contactId}/avatar`, {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                'X-CSRF-TOKEN': csrfToken(),
+            },
+            body: JSON.stringify({ force: true }),
+        })
+            .then(async (response) => {
+                if (!response.ok) {
+                    return null;
+                }
+
+                return response.json() as Promise<{ avatar_url?: unknown }>;
+            })
+            .then((payload) => {
+                const refreshedUrl = payload?.avatar_url;
+
+                if (
+                    retryState.current.requestVersion !== requestVersion ||
+                    retryState.current.sourceUrl !== failedUrl ||
+                    retryState.current.contactId !== contactId ||
+                    !isAvatarUrl(refreshedUrl) ||
+                    refreshedUrl === failedUrl
+                ) {
+                    return;
+                }
+
+                setAvatarUrl(refreshedUrl);
+            })
+            .catch(() => undefined);
+    };
+
+    return { avatarUrl, handleAvatarError };
+}
+
+function isAvatarUrl(value: unknown): value is string {
+    if (typeof value !== 'string' || value === '') {
+        return false;
+    }
+
+    try {
+        const url = new URL(value);
+
+        return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+        return false;
+    }
+}
 
 function useCloseOnOutsidePointer<T extends HTMLElement>(
     ref: RefObject<T | null>,
@@ -1073,13 +1175,19 @@ function ContactList({
 }
 
 function ContactAvatar({ contact }: { contact: AgendaContact }) {
-    if (contact.avatar_url) {
+    const { avatarUrl, handleAvatarError } = useAvatarSource(
+        contact.avatar_url,
+        contact.id,
+    );
+
+    if (avatarUrl) {
         return (
             <img
-                src={contact.avatar_url}
+                src={avatarUrl}
                 alt={`Foto de perfil de ${contact.display_name}`}
                 className="size-10 rounded-full border border-(--app-border) object-cover"
                 loading="lazy"
+                onError={handleAvatarError}
             />
         );
     }
@@ -1254,6 +1362,8 @@ function ConversationRow({
     onSelect: (chatId: string) => void;
 }) {
     const [avatarUrl, setAvatarUrl] = useState(conversation.avatar_url);
+    const { avatarUrl: displayedAvatarUrl, handleAvatarError } =
+        useAvatarSource(avatarUrl, conversation.contact_id);
     const [avatarPreview, setAvatarPreview] = useState<ImagePreview | null>(
         null,
     );
@@ -1270,6 +1380,8 @@ function ConversationRow({
     }, [conversation.avatar_url]);
 
     useEffect(() => {
+        let active = true;
+
         if (
             conversation.contact_id === null ||
             avatarUrl ||
@@ -1294,14 +1406,15 @@ function ConversationRow({
                     response.json() as Promise<{ avatar_url?: unknown }>,
             )
             .then((payload) => {
-                if (
-                    typeof payload.avatar_url === 'string' &&
-                    payload.avatar_url !== ''
-                ) {
+                if (active && isAvatarUrl(payload.avatar_url)) {
                     setAvatarUrl(payload.avatar_url);
                 }
             })
             .catch(() => undefined);
+
+        return () => {
+            active = false;
+        };
     }, [avatarUrl, conversation.contact_id, conversation.avatar_url]);
 
     const markConversationUnread = () => {
@@ -1372,13 +1485,13 @@ function ConversationRow({
         >
             <div className="flex gap-3 px-4 py-3">
                 <div className="shrink-0">
-                    {avatarUrl ? (
+                    {displayedAvatarUrl ? (
                         <button
                             type="button"
                             onClick={() =>
                                 setAvatarPreview({
                                     id: conversation.id,
-                                    url: avatarUrl,
+                                    url: displayedAvatarUrl,
                                     filename: `Foto de perfil de ${title}`,
                                 })
                             }
@@ -1387,10 +1500,11 @@ function ConversationRow({
                             aria-label={`Ver foto de perfil de ${title}`}
                         >
                             <img
-                                src={avatarUrl}
+                                src={displayedAvatarUrl}
                                 alt={`Foto de perfil de ${title}`}
                                 className="size-11 rounded-full border border-(--app-border) object-cover"
                                 loading="lazy"
+                                onError={handleAvatarError}
                             />
                         </button>
                     ) : (
@@ -3552,15 +3666,20 @@ function MessageMedia({
 function ContactMessageCard({ message }: { message: MessageItem }) {
     const contact = contactMessageMetadata(message);
     const name = contact.name ?? message.body ?? 'Contacto';
+    const { avatarUrl, handleAvatarError } = useAvatarSource(
+        contact.avatarUrl,
+        null,
+    );
 
     return (
         <div className="app-surface-soft mb-2 flex min-w-60 items-center gap-3 rounded-lg border px-3 py-2 text-sm">
-            {contact.avatarUrl ? (
+            {avatarUrl ? (
                 <img
-                    src={contact.avatarUrl}
+                    src={avatarUrl}
                     alt={`Foto de perfil de ${name}`}
                     className="size-10 shrink-0 rounded-full border border-(--app-border) object-cover"
                     loading="lazy"
+                    onError={handleAvatarError}
                 />
             ) : (
                 <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-(--app-border) bg-(--app-surface-strong) font-semibold">
